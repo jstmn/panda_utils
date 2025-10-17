@@ -4,7 +4,6 @@ import numpy as np
 import open3d as o3d
 
 
-
 @dataclass
 class PandaLimits:
     # Joint space
@@ -41,7 +40,6 @@ class PandaLimits:
             self.rotation_jerk_max,
         ]:
             assert x.shape == (7,), f"Expected shape (7,), got {x.shape}"
-
 
 
 @dataclass

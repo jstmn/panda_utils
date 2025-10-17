@@ -23,8 +23,8 @@ from deoxys.utils.yaml_config import YamlConfig
 from deoxys.utils.config_utils import get_default_controller_config
 from deoxys.experimental.motion_utils import reset_joints_to
 
-from mpcm.deoxys_controller import wait_for_robot_ready
-from mpcm.constants import PANDA_LIMITS
+from panda_utils.deoxys_controller import wait_for_robot_ready
+from panda_utils.constants import PANDA_LIMITS
 
 
 PI_ON_4 = np.pi / 4
@@ -769,11 +769,10 @@ def main(deoxys_interface_cfg: str, dont_plot: bool, method: str):
     eval(f"controller.{method}(plot_results=not dont_plot)")
 
 
-""" NOTE! This script is not run by uv. It should be run from a seperate python environment, because this file requires
-both ros python packages and the deoxys library. Including both would balloon the uv environment.
+""" 
+source /opt/ros/noetic/setup.bash; source ${ROS_WS}/devel/setup.bash; conda activate hardware_env; cd ${PANDA_UTILS_DIR}
 
 # Run
-source /opt/ros/noetic/setup.bash; source hardware_venv/bin/activate
 python scripts/deoxys_tuning.py \
     --deoxys-interface-cfg configs/charmander.yml \
     --dont-plot --method CARTESIAN_VELOCITY_2

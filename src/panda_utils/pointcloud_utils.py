@@ -9,7 +9,13 @@ from panda_utils.types import (
     CameraExtrinsics,
     WorkspaceBounds,
 )
-from panda_utils.constants import REALSENSE_DEPTH_INTRINSICS, REALSENSE_COLOR_INTRINSICS, DEPTH_MAX_M, WORKSPACE_BOUNDS
+from panda_utils.constants import (
+    REALSENSE_DEPTH_INTRINSICS,
+    REALSENSE_COLOR_INTRINSICS,
+    DEPTH_MAX_M,
+    WORKSPACE_BOUNDS,
+    CAMERA_EXTRINSICS,
+)
 
 
 def align_rgb_to_depth(
