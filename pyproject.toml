@@ -11,6 +11,9 @@ dependencies = [
     "termcolor",
     "h5py",
     "torch",
-    "pytest"
+    "pytest",
+    "ruff",
+    "black",
+    "opencv-python"
 ]
 

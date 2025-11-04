@@ -3,6 +3,7 @@ import torch
 import numpy as np
 import h5py
 
+
 def cm_to_m(cm: float) -> float:
     return cm / 100.0
 
@@ -34,7 +35,6 @@ def to_public_dict(obj):
             continue
         result[attr] = to_public_dict(value)
     return result
-
 
 
 def assert_is_4x4_matrix(matrix: np.ndarray):

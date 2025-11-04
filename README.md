@@ -25,7 +25,7 @@ echo "PANDA_UTILS_DIR='/path/to/this/repo'" >> ~/.bashrc; source ~/.bashrc
 # Create and activate a conda environment called `panda`:
 conda create -n hardware_env python=3.10 -y
 conda activate hardware_env
-pip install matplotlib numpy open3d opencv-python termcolor h5py rospkg ruff black
+pip install matplotlib rospkg
 git clone https://github.com/jstmn/Jrl2 thirdparty/Jrl2
 git clone https://github.com/jstmn/Jrl thirdparty/Jrl
 pip install -e thirdparty/Jrl2
