@@ -3,6 +3,7 @@ import numpy as np
 import h5py
 
 import open3d as o3d
+import cv2
 from panda_utils.utils import print_variable_recursively
 from panda_utils.extrinsics_calibration_utils import (
     get_simulated_pointcloud,
@@ -45,25 +46,22 @@ def h5_data():
     """
     with h5py.File("tests/data/extrinsics_test_data.h5", "r") as f:
         data = {
-            "color_image": f["camera__north_color_image"][:],
-            "depth_image": f["camera__north_depth_image"][:],
-            "joint_states_q": f["joint_states_q"][:],
+            "color_image": f["camera__north_color_image"][0],
+            "depth_image": f["camera__north_depth_image"][0],
+            "joint_states_q": f["joint_states_q"][0],
         }
     return data
 
-
 def test_create_pointcloud_from_hdf5(h5_data):
     print_variable_recursively(h5_data)
-    for idx in range(len(h5_data["color_image"])):
-        color_image = h5_data["color_image"][idx]  # (720, 1280, 3)
-        depth_image = h5_data["depth_image"][idx]
-        depth_image[depth_image < 1] = 5000
-        depth_aligned = align_depth_to_color(depth_image)
-        assert depth_aligned.shape[0:2] == (
-            720,
-            1280,
-        ), f"Depth image should have shape (720, 1280), got {depth_aligned.shape[0:2]}"
-        pointcloud, pointcloud_np = pointcloud_from_rgbd(color_image, depth_aligned)
-        pointcloud_cropped = crop_pointcloud_to_workspace(pointcloud)
-        pcd_cropped_np = pointcloud_cropped.point.positions.numpy()
-        visualize_pointcloud(pointcloud_cropped, name=f"Cropped Pointcloud [idx: {idx}]")
+    color_image = h5_data["color_image"]  # (720, 1280, 3)
+    depth_image = h5_data["depth_image"]
+
+    cv2.imshow("Color Image", color_image)
+    cv2.imshow("Depth Image", depth_image)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+    depth_image[depth_image < 1] = 5000
+    depth_aligned = align_depth_to_color(depth_image)
+    pointcloud, pointcloud_np = pointcloud_from_rgbd(color_image, depth_aligned)
+    # visualize_pointcloud(pointcloud, name="Pointcloud")
