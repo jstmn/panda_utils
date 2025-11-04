@@ -17,3 +17,5 @@ thirdparty/*/
 *.png
 *.mp4
 *.glb
+
+data/
