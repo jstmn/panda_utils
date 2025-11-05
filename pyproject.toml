@@ -4,5 +4,16 @@ version = "0.1.0"
 description = "Pointcloud utils and control for the franka panda robot"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "mani_skill",
+    "numpy",
+    "open3d",
+    "termcolor",
+    "h5py",
+    "torch",
+    "pytest",
+    "ruff",
+    "black",
+    "opencv-python"
+]
 
