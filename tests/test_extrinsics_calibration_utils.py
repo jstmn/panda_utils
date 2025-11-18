@@ -14,7 +14,8 @@ from panda_utils.pointcloud_utils import pointcloud_from_rgbd, align_depth_to_co
 
 
 """
-pytest tests/test_extrinsics_calibration_utils.py --capture=no
+conda activate hardware_env
+pytest tests/test_extrinsics_calibration_utils.py --capture=no --disable-warnings
 """
 
 
@@ -57,11 +58,15 @@ def test_create_pointcloud_from_hdf5(h5_data):
     color_image = h5_data["color_image"]  # (720, 1280, 3)
     depth_image = h5_data["depth_image"]
 
-    cv2.imshow("Color Image", color_image)
+    # Swap blue and red channels for correct color display
+    color_image_cv2 = color_image[..., [2, 1, 0]]  # RGB to BGR or BGR to RGB
+    # cv2.imwrite("tests/data/extrinsics_test_data.h5__color_image0.jpg", color_image_cv2)
+    # cv2.imwrite("tests/data/extrinsics_test_data.h5__depth_image0.jpg", depth_image)
+    cv2.imshow("Color Image", color_image_cv2)
     cv2.imshow("Depth Image", depth_image)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
     depth_image[depth_image < 1] = 5000
     depth_aligned = align_depth_to_color(depth_image)
     pointcloud, pointcloud_np = pointcloud_from_rgbd(color_image, depth_aligned)
-    # visualize_pointcloud(pointcloud, name="Pointcloud")
+    visualize_pointcloud(pointcloud, name="Pointcloud")

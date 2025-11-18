@@ -34,4 +34,41 @@ pip install -U -r ${DEOXYS_DIR}/deoxys/requirements.txt
 pip install 'protobuf<=3.20.0'  # This will give warnings/errors, that's fine
 pip install -e ${DEOXYS_DIR}/deoxys
 pip install -e .
+
+
+# Grounded-Segment-Anythin installation (needed for automatic extrinsics calibration)
+git clone https://github.com/IDEA-Research/Grounded-Segment-Anything.git thirdparty/Grounded-Segment-Anything
+conda install -c nvidia cuda-toolkit=12.8
+sudo apt-get install -y libxcb-xinerama0 libxcb-xinerama0-dev libxkbcommon-x11-0 libxcb1 libxcb-render0 libxcb-shape0 libxcb-xfixes0
+pip install --no-build-isolation -e thirdparty/Grounded-Segment-Anything/GroundingDINO
+cd thirdparty/Grounded-Segment-Anything
+wget https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth
+wget https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth
+
+# Validate with
+python grounded_sam_demo.py \
+  --config GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py \
+  --grounded_checkpoint groundingdino_swint_ogc.pth \
+  --sam_checkpoint sam_vit_h_4b8939.pth \
+  --input_image assets/demo1.jpg \
+  --output_dir "outputs" \
+  --box_threshold 0.3 \
+  --text_threshold 0.25 \
+  --text_prompt "bear" \
+  --device "cuda"
+
+
+# Validate with
+python grounded_sam_demo.py \
+  --config GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py \
+  --grounded_checkpoint groundingdino_swint_ogc.pth \
+  --sam_checkpoint sam_vit_h_4b8939.pth \
+  --input_image ../../tests/data/extrinsics_test_data.h5__color_image0.jpg \
+  --output_dir "outputs" \
+  --box_threshold 0.3 \
+  --text_threshold 0.25 \
+  --text_prompt "franka panda white robot arm with gripper" \
+  --device "cuda"
+
+#   --text_prompt "white robot arm" \
 ```
