@@ -17,3 +17,7 @@ thirdparty/*/
 *.png
 *.mp4
 *.glb
+
+notes
+.ruff_cache/
+logs/
