@@ -1,5 +1,6 @@
 import argparse
-import traceback
+from time import sleep
+from typing import Callable
 import rospy
 from sensor_msgs.msg import JointState, Image, CameraInfo
 from deoxys.franka_interface import FrankaInterface
@@ -16,32 +17,75 @@ import cv2
 import threading
 from termcolor import cprint
 
-from panda_utils.deoxys_controller import DeoxysController, RESET_JOINT_POSITIONS
+from panda_utils.deoxys_controller import RESET_JOINT_POSITIONS
 from panda_utils.utils import to_public_dict
 
 """ This script starts teleoperation using the spacemouse, and provides a ui for logging robot demonstrations.
+
+
+(hardware_env) resl@coldbrew:~/Desktop/panda_utils$ rostopic list
+/clicked_point
+/diagnostics
+/initialpose
+/move_base_simple/goal
+/panda/joint_states
+...
+/realsense_south/color/camera_info
+/realsense_south/color/image_raw
+/realsense_south/color/metadata
+/realsense_south/depth/camera_info
+/realsense_south/depth/color/points
+/realsense_south/depth/image_rect_raw
+/realsense_south/depth/metadata
+/realsense_north/color/camera_info
+/realsense_north/color/image_raw
+/realsense_north/color/metadata
+/realsense_north/depth/camera_info
+/realsense_north/depth/color/points
+/realsense_north/depth/image_rect_raw
+/realsense_north/depth/metadata
+/realsense_eih/color/camera_info
+/realsense_eih/color/image_raw
+/realsense_eih/color/metadata
+/realsense_eih/depth/camera_info
+/realsense_eih/depth/color/points
+/realsense_eih/depth/image_rect_raw
+/realsense_eih/depth/metadata
+...
+/rosout
+/rosout_agg
+/tf
+/tf_static
+
 """
+
+CONTROLLER_TYPE = "OSC_POSE"
+MISSING_CAMERA_DATA_ERROR_PRESENT = False
 
 
 class DataCollector:
     """Collects camera images and joint states during demonstration."""
 
-    def __init__(self, output_dir: Path, description: str, demo_index: int, camera_suffixes: list = None):
+    def __init__(self, output_dir: Path, description: str, demo_index: int, camera_ids: list | None = None):
+        if camera_ids is None:
+            for cam_id in camera_ids:
+                assert "_" not in cam_id, f"Camera id cannot contain underscore: {cam_id}"
+
         self.output_dir = (
             output_dir / f"{datetime.now().strftime('%m-%d_%H:%M:%S')}__{description}__demo_{demo_index:03d}"
         )
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        if camera_suffixes is None:
-            camera_suffixes = [""]
-            cprint("No camera suffixes provided! Only joint states will be recorded", "yellow")
-        self.camera_suffixes = camera_suffixes
+        if camera_ids is None:
+            camera_ids = [""]
+            cprint("No camera ids were provided! Only joint states will be recorded", "yellow")
+        self._camera_ids = camera_ids
 
         # Storage
         self.joint_states_msgs = []
         self.camera_data = {}
-        for suffix in camera_suffixes:
-            self.camera_data[suffix] = {
+        for cam_id in camera_ids:
+            self.camera_data[cam_id] = {
                 "depth_images": [],
                 "color_images": [],
                 "depth_camera_info": None,
@@ -50,81 +94,100 @@ class DataCollector:
 
         # Latest data
         self._latest_joint_state = None
-        for suffix in camera_suffixes:
-            self.camera_data[suffix]["_latest_depth"] = None
-            self.camera_data[suffix]["_latest_color"] = None
+        for cam_id in camera_ids:
+            self.camera_data[cam_id]["_latest_depth"] = None
+            self.camera_data[cam_id]["_latest_color"] = None
 
         # ROS subscribers
         self._subscribers = []
         self._joint_sub = rospy.Subscriber("/panda/joint_states", JointState, self._joint_callback)
 
-        for suffix in camera_suffixes:
-            prefix = f"/realsense{suffix}"
+        for cam_id in camera_ids:
             self._subscribers.append(
                 rospy.Subscriber(
-                    f"{prefix}/depth/image_rect_raw", Image, lambda msg, s=suffix: self._depth_callback(msg, s)
-                )
-            )
-            self._subscribers.append(
-                rospy.Subscriber(f"{prefix}/color/image_raw", Image, lambda msg, s=suffix: self._color_callback(msg, s))
-            )
-            self._subscribers.append(
-                rospy.Subscriber(
-                    f"{prefix}/depth/camera_info", CameraInfo, lambda msg, s=suffix: self._depth_info_callback(msg, s)
+                    f"/realsense_{cam_id}/depth/image_rect_raw",
+                    Image,
+                    lambda msg, s=cam_id: self._depth_callback(msg, s),
                 )
             )
             self._subscribers.append(
                 rospy.Subscriber(
-                    f"{prefix}/color/camera_info", CameraInfo, lambda msg, s=suffix: self._color_info_callback(msg, s)
+                    f"/realsense_{cam_id}/color/image_raw", Image, lambda msg, s=cam_id: self._color_callback(msg, s)
                 )
             )
-        self.is_recording = False
+            self._subscribers.append(
+                rospy.Subscriber(
+                    f"/realsense_{cam_id}/depth/camera_info",
+                    CameraInfo,
+                    lambda msg, s=cam_id: self._depth_info_callback(msg, s),
+                )
+            )
+            self._subscribers.append(
+                rospy.Subscriber(
+                    f"/realsense_{cam_id}/color/camera_info",
+                    CameraInfo,
+                    lambda msg, s=cam_id: self._color_info_callback(msg, s),
+                )
+            )
+        self._is_recording = False
+
+    @property
+    def is_recording(self) -> bool:
+        return self._is_recording
 
     def _joint_callback(self, msg):
         self._latest_joint_state = msg
 
-    def _depth_callback(self, msg, suffix):
-        self.camera_data[suffix]["_latest_depth"] = msg
+    def _depth_callback(self, msg, cam_id):
+        self.camera_data[cam_id]["_latest_depth"] = msg
 
-    def _color_callback(self, msg, suffix):
-        self.camera_data[suffix]["_latest_color"] = msg
+    def _color_callback(self, msg, cam_id):
+        self.camera_data[cam_id]["_latest_color"] = msg
 
-    def _depth_info_callback(self, msg, suffix):
-        if self.camera_data[suffix]["depth_camera_info"] is None:
-            self.camera_data[suffix]["depth_camera_info"] = msg
+    def _depth_info_callback(self, msg, cam_id):
+        if self.camera_data[cam_id]["depth_camera_info"] is None:
+            self.camera_data[cam_id]["depth_camera_info"] = msg
 
-    def _color_info_callback(self, msg, suffix):
-        if self.camera_data[suffix]["color_camera_info"] is None:
-            self.camera_data[suffix]["color_camera_info"] = msg
+    def _color_info_callback(self, msg, cam_id):
+        if self.camera_data[cam_id]["color_camera_info"] is None:
+            self.camera_data[cam_id]["color_camera_info"] = msg
 
     def start_recording(self):
         """Start recording data."""
-        self.is_recording = True
+        self._is_recording = True
         self.joint_states_msgs = []
-        for suffix in self.camera_suffixes:
-            self.camera_data[suffix]["depth_images"] = []
-            self.camera_data[suffix]["color_images"] = []
+        for cam_id in self._camera_ids:
+            self.camera_data[cam_id]["depth_images"] = []
+            self.camera_data[cam_id]["color_images"] = []
         cprint("🎬 Started recording", "green")
 
-    def record_sample(self):
+    def record_sample(self) -> list[str]:
         """Record one sample of all data."""
         if not self.is_recording:
-            return
+            return []
 
         # Record joint state
         if self._latest_joint_state is not None:
             self.joint_states_msgs.append(self._latest_joint_state)
 
         # Record camera data
-        for suffix in self.camera_suffixes:
-            if self.camera_data[suffix]["_latest_depth"] is not None:
-                self.camera_data[suffix]["depth_images"].append(self.camera_data[suffix]["_latest_depth"])
-            if self.camera_data[suffix]["_latest_color"] is not None:
-                self.camera_data[suffix]["color_images"].append(self.camera_data[suffix]["_latest_color"])
+        collected_camera_ids = []
+        for cam_id in self._camera_ids:
+            if self.camera_data[cam_id]["_latest_depth"] is not None:
+                self.camera_data[cam_id]["depth_images"].append(self.camera_data[cam_id]["_latest_depth"])
+                collected_camera_ids.append(cam_id)
+
+            if self.camera_data[cam_id]["_latest_color"] is not None:
+                self.camera_data[cam_id]["color_images"].append(self.camera_data[cam_id]["_latest_color"])
+                assert (
+                    collected_camera_ids[-1] == cam_id
+                ), f"For some reason, depth wasn't read for {cam_id}, but color was"
+
+        return collected_camera_ids
 
     def stop_recording(self):
         """Stop recording."""
-        self.is_recording = False
+        self._is_recording = False
         cprint("⏹️  Stopped recording", "yellow")
 
     def save(self):
@@ -143,10 +206,10 @@ class DataCollector:
             f.create_dataset("joint_states_dq", data=dq)
 
             # Camera data
-            for suffix in self.camera_suffixes:
-                if len(self.camera_data[suffix]["depth_images"]) > 0:
-                    depth_msgs = self.camera_data[suffix]["depth_images"]
-                    color_msgs = self.camera_data[suffix]["color_images"]
+            for cam_id in self._camera_ids:
+                if len(self.camera_data[cam_id]["depth_images"]) > 0:
+                    depth_msgs = self.camera_data[cam_id]["depth_images"]
+                    color_msgs = self.camera_data[cam_id]["color_images"]
 
                     depth_images = np.array(
                         [np.frombuffer(msg.data, dtype=np.uint16).reshape(msg.height, msg.width) for msg in depth_msgs]
@@ -157,104 +220,66 @@ class DataCollector:
                             for msg in color_msgs
                         ]
                     )
-
-                    # Use consistent naming: camera_north, camera_south, or camera (default)
-                    if suffix:
-                        prefix = f"camera{suffix}"  # suffix has underscore like "_north"
-                    else:
-                        prefix = "camera"
-
-                    f.create_dataset(f"{prefix}_depth_image", data=depth_images)
-                    f.create_dataset(f"{prefix}_color_image", data=color_images)
+                    f.create_dataset(f"{cam_id}__depth_image", data=depth_images)
+                    f.create_dataset(f"{cam_id}__color_image", data=color_images)
 
         # Save camera info
-        for suffix in self.camera_suffixes:
-            if self.camera_data[suffix]["depth_camera_info"] is not None:
-                # Consistent naming for JSON files
-                if suffix:
-                    prefix = f"camera{suffix}"  # suffix has underscore like "_north"
-                else:
-                    prefix = "camera"
-
-                with open(self.output_dir / f"{prefix}_camera_info_depth.json", "w") as f:
-                    json.dump(to_public_dict(self.camera_data[suffix]["depth_camera_info"]), f)
-                with open(self.output_dir / f"{prefix}_camera_info_color.json", "w") as f:
-                    json.dump(to_public_dict(self.camera_data[suffix]["color_camera_info"]), f)
+        for cam_id in self._camera_ids:
+            if self.camera_data[cam_id]["depth_camera_info"] is not None:
+                with open(self.output_dir / f"{cam_id}_camera_info_depth.json", "w") as f:
+                    json.dump(to_public_dict(self.camera_data[cam_id]["depth_camera_info"]), f)
+            if self.camera_data[cam_id]["color_camera_info"] is not None:
+                with open(self.output_dir / f"{cam_id}_camera_info_color.json", "w") as f:
+                    json.dump(to_public_dict(self.camera_data[cam_id]["color_camera_info"]), f)
 
         # Save sample images
         img_dir = self.output_dir / "images"
         img_dir.mkdir(exist_ok=True)
-        saved_count = 0
 
         cprint(f"\n📸 Saving sample images to {img_dir}...", "cyan")
-        cprint(f"   Processing {len(self.camera_suffixes)} camera(s): {self.camera_suffixes}", "cyan")
+        cprint(f"   Processing {len(self._camera_ids)} camera(s): {self._camera_ids}", "cyan")
 
-        for suffix in self.camera_suffixes:
-            num_depth = len(self.camera_data[suffix]["depth_images"])
-            num_color = len(self.camera_data[suffix]["color_images"])
-            cprint(f"   Camera{suffix}: {num_depth} depth, {num_color} color images collected", "white")
+        for cam_id in self._camera_ids:
+            num_depth = len(self.camera_data[cam_id]["depth_images"])
+            num_color = len(self.camera_data[cam_id]["color_images"])
+            cprint(f"   Camera{cam_id}: {num_depth} depth, {num_color} color images collected", "white")
 
             if num_depth == 0:
-                cprint(f"   ⚠️  No images collected for camera{suffix}, skipping...", "yellow")
+                cprint(f"   ⚠️  No images collected for camera: '{cam_id}', skipping...", "yellow")
                 continue
 
-            try:
-                depth_msgs = self.camera_data[suffix]["depth_images"]
-                color_msgs = self.camera_data[suffix]["color_images"]
+            depth_msgs = self.camera_data[cam_id]["depth_images"]
+            color_msgs = self.camera_data[cam_id]["color_images"]
 
-                # Convert messages to numpy arrays
-                cprint(f"   Converting camera{suffix} messages to arrays...", "white")
-                depth_images = []
-                for msg in depth_msgs:
-                    img = np.frombuffer(msg.data, dtype=np.uint16).reshape(msg.height, msg.width)
-                    depth_images.append(img)
-                depth_images = np.array(depth_images)
+            # Convert messages to numpy arrays
+            depth_images = []
+            for msg in depth_msgs:
+                img = np.frombuffer(msg.data, dtype=np.uint16).reshape(msg.height, msg.width)
+                depth_images.append(img)
+            depth_images = np.array(depth_images)
 
-                color_images = []
-                for msg in color_msgs:
-                    img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, -1)
-                    color_images.append(img)
-                color_images = np.array(color_images)
+            color_images = []
+            for msg in color_msgs:
+                img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, -1)
+                color_images.append(img)
+            color_images = np.array(color_images)
+            num_samples = len(depth_images)  # Save all images
+            cprint(f"   Depth shape: {depth_images.shape}, Color shape: {color_images.shape}", "white")
+            cprint(f"   Saving all {num_samples} images as PNG...", "white")
 
-                cprint(f"   Depth shape: {depth_images.shape}, Color shape: {color_images.shape}", "white")
+            for i in range(num_samples):
+                # Save depth (already in uint16, good for PNG)
+                depth_path = img_dir / f"{cam_id}__depth_{i:03d}.png"
+                success = cv2.imwrite(str(depth_path), depth_images[i])
+                assert success, f"Failed to save {depth_path.name}"
 
-                # Determine prefix
-                if suffix:
-                    prefix = f"camera{suffix}_"  # suffix already has underscore like "_north"
-                else:
-                    prefix = "camera_"
-
-                num_samples = len(depth_images)  # Save all images
-                cprint(f"   Saving all {num_samples} images as PNG...", "white")
-
-                for i in range(num_samples):
-                    # Save depth (already in uint16, good for PNG)
-                    depth_path = img_dir / f"{prefix}depth_{i}.png"
-                    success = cv2.imwrite(str(depth_path), depth_images[i])
-                    if success:
-                        saved_count += 1
-                        # cprint(f"      ✓ Saved {depth_path.name}", "green")
-                    else:
-                        cprint(f"      ✗ Failed to save {depth_path.name}", "red")
-
-                    # Convert RGB to BGR for OpenCV
-                    color_bgr = cv2.cvtColor(color_images[i], cv2.COLOR_RGB2BGR)
-                    color_path = img_dir / f"{prefix}color_{i}.png"
-                    success = cv2.imwrite(str(color_path), color_bgr)
-                    if success:
-                        saved_count += 1
-                        # cprint(f"      ✓ Saved {color_path.name}", "green")
-                    else:
-                        cprint(f"      ✗ Failed to save {color_path.name}", "red")
-
-            except Exception as e:
-                cprint(f"   ❌ Error processing camera{suffix}: {e}", "red")
-                traceback.print_exc()
-                raise e
+                # Convert RGB to BGR for OpenCV
+                color_bgr = cv2.cvtColor(color_images[i], cv2.COLOR_RGB2BGR)
+                color_path = img_dir / f"{cam_id}__color_{i:03d}.png"
+                success = cv2.imwrite(str(color_path), color_bgr)
+                assert success, f"Failed to save {color_path.name}"
 
         cprint(f"💾 Saved {len(self.joint_states_msgs)} samples to {h5_path}", "green")
-        if saved_count > 0:
-            cprint(f"   📸 Saved {saved_count} sample color images to {img_dir}", "green")
 
 
 def joint_publish_thread_target(robot_interface: FrankaInterface):
@@ -295,10 +320,10 @@ def joint_publish_thread_target(robot_interface: FrankaInterface):
 
 
 def teleop_control_thread_target(
-    robot_interface: FrankaInterface, device: SpaceMouse, controller_type: str, data_collector: DataCollector
+    robot_interface: FrankaInterface, device: SpaceMouse, should_continue: Callable[[], bool]
 ):
     """Teleop control loop (from panda_teleop.py) + data collection."""
-    controller_cfg = get_default_controller_config(controller_type=controller_type)
+    controller_cfg = get_default_controller_config(controller_type=CONTROLLER_TYPE)
     rate = rospy.Rate(50)
 
     cprint("🎮 Teleop active - use SpaceMouse to control robot", "cyan")
@@ -306,10 +331,13 @@ def teleop_control_thread_target(
 
     while not rospy.is_shutdown():
         rate.sleep()
+        if not should_continue():
+            continue
+
         try:
-            action, grasp = input2action(device=device, controller_type=controller_type)
+            action, grasp = input2action(device=device, controller_type=CONTROLLER_TYPE)
             robot_interface.control(
-                controller_type=controller_type,
+                controller_type=CONTROLLER_TYPE,
                 action=action,
                 controller_cfg=controller_cfg,
             )
@@ -318,21 +346,29 @@ def teleop_control_thread_target(
             break
 
 
-def data_collection_thread_target(data_collector: DataCollector):
+def data_collection_thread_target(data_collector: DataCollector, rate_hz: float, camera_ids: list[str]):
     """Background thread to collect data at fixed rate."""
-    rate = rospy.Rate(10)  # 10 Hz data collection
-
+    rate = rospy.Rate(rate_hz)
+    global MISSING_CAMERA_DATA_ERROR_PRESENT
     while not rospy.is_shutdown():
         rate.sleep()
-        data_collector.record_sample()
+        if not data_collector.is_recording:
+            continue
+        found_cams = data_collector.record_sample()
+        missing_cams = [x for x in camera_ids if x not in found_cams]
+        if len(missing_cams) > 0:
+            MISSING_CAMERA_DATA_ERROR_PRESENT = True
+            rospy.logerr(f"RGBD data is missing from specified cameras. Missing data from: {missing_cams}")
+    rospy.loginfo("Data collection thread finished")
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--description", type=str, default="")
+    parser.add_argument("--recording_rate_hz", type=float, default=15.0)
     parser.add_argument(
-        "--camera_suffixes", type=str, nargs="*", default=None, help="List of camera suffixes (e.g., _north _south)"
+        "--camera_ids", type=str, nargs="*", default=None, help="List of camera ids (e.g., north south eih)"
     )
     parser.add_argument(
         "--interface-cfg",
@@ -340,33 +376,33 @@ def main():
         default=None,
         help="Path to robot interface config (default: configs/charmander.yml)",
     )
-    parser.add_argument("--controller-type", type=str, default="OSC_POSE")
     parser.add_argument("--vendor-id", type=int, default=9583)
-    parser.add_argument("--product-id", type=int, default=50734)
+    parser.add_argument("--product-id", type=int, default=50741)
     parser.add_argument("--no-teleop", action="store_true", help="Disable teleop (for kinesthetic teaching)")
     args = parser.parse_args()
-
-    rospy.init_node("log_demo_ui", anonymous=False)
-    project_dir = Path(__file__).parent.parent
+    #
+    rospy.init_node("log_demonstrations", anonymous=False)
+    global MISSING_CAMERA_DATA_ERROR_PRESENT
 
     # Set default interface config if not provided
+    project_dir = Path(__file__).parent.parent
     if args.interface_cfg is None:
         args.interface_cfg = f"{project_dir}/configs/charmander.yml"
 
     # Initialize SpaceMouse
-    device = None
-    if not args.no_teleop:
-        try:
-            cprint("Initializing SpaceMouse...", "cyan")
-            device = SpaceMouse(vendor_id=args.vendor_id, product_id=args.product_id)
-            device.start_control()
-            cprint("✅ SpaceMouse ready", "green")
-        except Exception as e:
-            cprint(f"❌ SpaceMouse failed: {e}", "red")
-            response = input("Continue without teleop? (y/n): ").strip().lower()
-            if response != "y":
-                return
+    try:
+        device = SpaceMouse(vendor_id=args.vendor_id, product_id=args.product_id)
+        device.start_control()
+    except OSError as e:
+        cprint(
+            f"❌ Failed to initialize SpaceMouse: {e}. You likely need to change the vendor-id and product-id.", "red"
+        )
+        exit(1)
+    except Exception as e:
+        cprint(f"❌ Unknown error starting SpaceMouse: {e}", "red")
+        exit(1)
 
+    #
     cprint("\n" + "=" * 60, "cyan")
     cprint("🤖 Demo Collection with Teleop", "cyan", attrs=["bold"])
     cprint("=" * 60, "cyan")
@@ -389,7 +425,22 @@ def main():
     joint_thread.daemon = True
     joint_thread.start()
 
+    # Start teleop control thread
+    SHOULD_CONTINUE = True
+
+    def should_continue():
+        return SHOULD_CONTINUE
+
+    teleop_thread = threading.Thread(
+        target=teleop_control_thread_target,
+        args=(robot_interface, device, should_continue),
+    )
+    teleop_thread.daemon = True
+    teleop_thread.start()
+
+    # Initialize classes collector
     demo_index = 0
+    data_collector = DataCollector(Path(args.output_dir), args.description, demo_index, args.camera_ids)
 
     while not rospy.is_shutdown():
         cprint(f"\n{'='*60}", "cyan")
@@ -398,33 +449,17 @@ def main():
 
         # Reset robot
         cprint("🔄 Resetting robot...", "yellow")
-        try:
-            deoxys_controller = DeoxysController(robot_interface, launch_viser=False, viser_use_visual=False)
-            reset_joints_to(robot_interface, RESET_JOINT_POSITIONS)
-            del deoxys_controller
-            cprint("✅ Reset complete", "green")
-        except Exception as e:
-            cprint(f"❌ Reset failed: {e}", "red")
-            continue
-
-        # Initialize data collector
-        data_collector = DataCollector(Path(args.output_dir), args.description, demo_index, args.camera_suffixes)
+        SHOULD_CONTINUE = False
+        sleep(0.1)
+        reset_joints_to(robot_interface, RESET_JOINT_POSITIONS)
+        SHOULD_CONTINUE = True
 
         # Start data collection thread
-        data_thread = threading.Thread(target=data_collection_thread_target, args=(data_collector,))
+        data_thread = threading.Thread(
+            target=data_collection_thread_target, args=(data_collector, args.recording_rate_hz, args.camera_ids)
+        )
         data_thread.daemon = True
         data_thread.start()
-
-        # Start teleop if enabled
-        if device is not None:
-            teleop_thread = threading.Thread(
-                target=teleop_control_thread_target,
-                args=(robot_interface, device, args.controller_type, data_collector),
-            )
-            teleop_thread.daemon = True
-            teleop_thread.start()
-        else:
-            cprint("✋ Move robot by hand (kinesthetic teaching)", "cyan")
 
         # Wait for user to start
         input("\n▶️  Press ENTER to START recording demo...")
@@ -434,15 +469,9 @@ def main():
         input("\n⏸️  Press ENTER to STOP recording demo...")
         data_collector.stop_recording()
 
-        # Stop teleop
-        # if device is not None:
-        #     controller_cfg = get_default_controller_config(controller_type=args.controller_type)
-        #     robot_interface.control(
-        #         controller_type=args.controller_type,
-        #         action=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0] + [1.0],
-        #         controller_cfg=controller_cfg,
-        #         termination=True,
-        #     )
+        if MISSING_CAMERA_DATA_ERROR_PRESENT:
+            cprint("❌ Missing camera in last demonstration. Please check the logs for more details.", "red")
+            return
 
         # Save data
         data_collector.save()
@@ -457,11 +486,7 @@ def main():
         demo_index += 1
 
     # Cleanup (done once at the end)
-    cprint("\n🔧 Cleaning up...", "cyan")
-    if device is not None:
-        device.stop_control()
     robot_interface.close()
-
     cprint(f"\n🏁 Collection complete! Total demos: {demo_index + 1}", "green", attrs=["bold"])
     rospy.signal_shutdown("Done")
 

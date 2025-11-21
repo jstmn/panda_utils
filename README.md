@@ -51,18 +51,17 @@ source /opt/ros/noetic/setup.bash; source ${ROS_WS}/devel/setup.bash; conda acti
 roscore
 
 # Terminal 2 - Realsense
-roslaunch franka_extrinsics main.launch \
-    json_file_path:=${PANDA_UTILS_DIR}/configs/realsense_config.json \
+roslaunch franka_realsense_extrinsics main.launch \
+    json_file_path:=${ROS_WS}/src/franka_realsense_extrinsics/config/realsense_config.json \
     clip_distance:=1.4 filters:="spatial,temporal" \
     depth_width:=640 depth_height:=480 depth_fps:=15 \
     color_width:=640 color_height:=480 color_fps:=15
 
 # Terminal 3 - Teleoperation + log demonstrations [Option 1]
 python scripts/log_demonstrations.py \
-  --output_dir ~/Desktop/data/<ADD YOUR DIRECORY NAME HERE> --description <DATA DESCRIPTION> --rate 15.0 \
-  --camera_suffixes _south _north _eih
+  --output_dir ~/Desktop/data/<ADD YOUR DIRECORY NAME HERE> --description <DATA DESCRIPTION> \
+  --recording_rate_hz 15.0 --camera_ids south north eih
 
-# Terminal 3 - Teleoperation [Option 1]
-python ${ROS_WS}/src/franka_realsense_extrinsics/scripts/panda_teleop.py \
-    --vendor-id 9583 --product-id 50741 --interface-cfg ${PANDA_UTILS_DIR}/configs/charmander.yml
+# Terminal 3 - Teleoperation [Option 2]
+python scripts/panda_teleop.py
 ```
