@@ -16,14 +16,12 @@ from deoxys.utils.io_devices import SpaceMouse
 import numpy as np
 import h5py
 import json
-import cv2
 import threading
 from termcolor import cprint
 
 
 from panda_utils.deoxys_controller import RESET_JOINT_POSITIONS
-from panda_utils.utils import to_public_dict
-from panda_utils.utils import wait_for_deoxys_ready
+from panda_utils.utils import wait_for_deoxys_ready, to_public_dict, save_combined_rgbs
 
 """ This script starts teleoperation using the spacemouse, and provides a ui for logging robot demonstrations.
 
@@ -70,14 +68,12 @@ CONTROLLER_TYPE = "OSC_POSE"
 class DataCollector:
     """Collects camera images and joint states during demonstration."""
 
-    def __init__(self, output_dir: Path, description: str, demo_index: int, camera_ids: list | None = None):
+    def __init__(self, output_dir: Path, description: str, camera_ids: list | None = None):
         if camera_ids is None:
             for cam_id in camera_ids:
                 assert "_" not in cam_id, f"Camera id cannot contain underscore: {cam_id}"
 
-        self.output_dir = (
-            output_dir / f"{datetime.now().strftime('%m-%d_%H:%M:%S')}__{description}__demo_{demo_index:03d}"
-        )
+        self.output_dir = output_dir / f"{description}__{datetime.now().strftime('%m-%d_%H:%M:%S')}"
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         if camera_ids is None:
@@ -203,7 +199,7 @@ class DataCollector:
         self._is_recording = False
         cprint("⏹️  Stopped recording", "yellow")
 
-    def save(self):
+    def save(self, traj_name: str):
         """Save collected data to disk."""
         if len(self.joint_states_msgs) == 0:
             cprint("⚠️  0 joint states logged.", "red")
@@ -211,12 +207,14 @@ class DataCollector:
 
         # Save HDF5
         h5_path = self.output_dir / "data.h5"
-        with h5py.File(h5_path, "w") as f:
+        with h5py.File(h5_path, "a") as f:
+            traj_group = f.create_group(traj_name)
+
             # Joint states
             q = np.array([msg.position for msg in self.joint_states_msgs])
             dq = np.array([msg.velocity for msg in self.joint_states_msgs])
-            f.create_dataset("joint_states_q", data=q)
-            f.create_dataset("joint_states_dq", data=dq)
+            traj_group.create_dataset("joint_states_q", data=q)
+            traj_group.create_dataset("joint_states_dq", data=dq)
 
             # Camera data
             for cam_id in self._camera_ids:
@@ -233,8 +231,8 @@ class DataCollector:
                             for msg in color_msgs
                         ]
                     )
-                    f.create_dataset(f"{cam_id}__depth_image", data=depth_images)
-                    f.create_dataset(f"{cam_id}__color_image", data=color_images)
+                    traj_group.create_dataset(f"{cam_id}__depth_image", data=depth_images)
+                    traj_group.create_dataset(f"{cam_id}__color_image", data=color_images)
 
         # Save camera info
         for cam_id in self._camera_ids:
@@ -251,46 +249,36 @@ class DataCollector:
 
         cprint(f"\n📸 Saving sample images to {img_dir}...", "cyan")
         cprint(f"   Processing {len(self._camera_ids)} camera(s): {self._camera_ids}", "cyan")
+        # Convert messages to numpy arrays for all cameras
+        all_color_images = {}
+        num_samples = 0
 
         for cam_id in self._camera_ids:
             num_depth = len(self.camera_data[cam_id]["depth_images"])
             num_color = len(self.camera_data[cam_id]["color_images"])
-            cprint(f"   Camera{cam_id}: {num_depth} depth, {num_color} color images collected", "white")
+            cprint(f"   Camera {cam_id}: {num_depth} depth, {num_color} color images collected", "white")
 
             if num_depth == 0:
                 cprint(f"   ⚠️  No images collected for camera: '{cam_id}', skipping...", "yellow")
                 continue
 
-            depth_msgs = self.camera_data[cam_id]["depth_images"]
             color_msgs = self.camera_data[cam_id]["color_images"]
-
-            # Convert messages to numpy arrays
-            depth_images = []
-            for msg in depth_msgs:
-                img = np.frombuffer(msg.data, dtype=np.uint16).reshape(msg.height, msg.width)
-                depth_images.append(img)
-            depth_images = np.array(depth_images)
-
             color_images = []
             for msg in color_msgs:
                 img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.width, -1)
                 color_images.append(img)
-            color_images = np.array(color_images)
-            num_samples = len(depth_images)  # Save all images
-            cprint(f"   Depth shape: {depth_images.shape}, Color shape: {color_images.shape}", "white")
-            cprint(f"   Saving all {num_samples} images as PNG...", "white")
+            all_color_images[cam_id] = np.array(color_images)
+            num_samples = max(num_samples, len(color_images))
 
+        # Save combined RGB images for each timestep
+        if num_samples > 0:
+            cprint(f"   Saving {num_samples} combined RGB images as PNG...", "white")
             for i in range(num_samples):
-                # Save depth (already in uint16, good for PNG)
-                depth_path = img_dir / f"{cam_id}__depth_{i:03d}.png"
-                success = cv2.imwrite(str(depth_path), depth_images[i])
-                assert success, f"Failed to save {depth_path.name}"
-
-                # Convert RGB to BGR for OpenCV
-                color_bgr = cv2.cvtColor(color_images[i], cv2.COLOR_RGB2BGR)
-                color_path = img_dir / f"{cam_id}__color_{i:03d}.png"
-                success = cv2.imwrite(str(color_path), color_bgr)
-                assert success, f"Failed to save {color_path.name}"
+                timestep_images = [
+                    all_color_images[cam_id][i] for cam_id in self._camera_ids if cam_id in all_color_images
+                ]
+                combined_path = img_dir / f"combined_rgb__{traj_name}__{i:03d}.png"
+                save_combined_rgbs(timestep_images, self._camera_ids, combined_path)
 
         cprint(f"💾 Saved {len(self.joint_states_msgs)} samples to {h5_path}", "green")
 
@@ -440,7 +428,7 @@ def main():
 
     # Initialize classes collector
     demo_index = 0
-    data_collector = DataCollector(Path(args.output_dir), args.description, demo_index, args.camera_ids)
+    data_collector = DataCollector(Path(args.output_dir), args.description, args.camera_ids)
     recording_rate = rospy.Rate(args.recording_rate_hz)
 
     def shutdown():
@@ -492,7 +480,7 @@ def main():
 
         # Save data
         cprint(f"💾 Saving data to {args.output_dir}", "white")
-        data_collector.save()
+        data_collector.save(traj_name=f"traj_{demo_index}")
 
         cprint(f"✅ Demo #{demo_index} complete!", "green")
 
