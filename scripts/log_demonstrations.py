@@ -206,15 +206,14 @@ class DataCollector:
             return
 
         # Save HDF5
-        h5_path = self.output_dir / "data.h5"
+        h5_path = self.output_dir / f"{traj_name}.h5"
         with h5py.File(h5_path, "a") as f:
-            traj_group = f.create_group(traj_name)
 
             # Joint states
             q = np.array([msg.position for msg in self.joint_states_msgs])
             dq = np.array([msg.velocity for msg in self.joint_states_msgs])
-            traj_group.create_dataset("joint_states_q", data=q)
-            traj_group.create_dataset("joint_states_dq", data=dq)
+            f.create_dataset("joint_states_q", data=q)
+            f.create_dataset("joint_states_dq", data=dq)
 
             # Camera data
             for cam_id in self._camera_ids:
@@ -231,8 +230,8 @@ class DataCollector:
                             for msg in color_msgs
                         ]
                     )
-                    traj_group.create_dataset(f"{cam_id}__depth_image", data=depth_images)
-                    traj_group.create_dataset(f"{cam_id}__color_image", data=color_images)
+                    f.create_dataset(f"{cam_id}__depth_image", data=depth_images)
+                    f.create_dataset(f"{cam_id}__color_image", data=color_images)
 
         # Save camera info
         for cam_id in self._camera_ids:
