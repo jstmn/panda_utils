@@ -17,10 +17,10 @@ This library contains code to do the following:
 Almost always I recommend using [uv](https://docs.astral.sh/uv/) or [pixi](https://pixi.sh/latest/), but because there's so many libraries that need to be cloned locally and then installed in an editable mode, I recommend just sticking to a simple conda environment. 
 
 ```bash
-echo "DEOXYS_DIR='/home/roc/Desktop/deoxys_control'" >> ~/.bashrc; source ~/.bashrc
+echo "DEOXYS_DIR='/PATH/TO/deoxys_control'" >> ~/.bashrc; source ~/.bashrc
 echo "PYTHONPATH='$PYTHONPATH:$DEOXYS_DIR/deoxys/'" >> ~/.bashrc; source ~/.bashrc
-echo "ROS_WS='/home/roc/Desktop/panda_ros_ws'" >> ~/.bashrc; source ~/.bashrc
-echo "PANDA_UTILS_DIR='/path/to/this/repo'" >> ~/.bashrc; source ~/.bashrc
+echo "ROS_WS='/PATH/TO/ROS_WS'" >> ~/.bashrc; source ~/.bashrc
+echo "PANDA_UTILS_DIR='/PATH/TO/panda_utils'" >> ~/.bashrc; source ~/.bashrc
 
 # Create and activate a conda environment called `panda`:
 conda create -n hardware_env python=3.10 -y

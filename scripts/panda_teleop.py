@@ -12,8 +12,19 @@ from deoxys.utils.config_utils import get_default_controller_config
 from deoxys.utils.input_utils import input2action
 from deoxys.utils.io_devices import SpaceMouse
 
+from panda_utils.utils import wait_for_deoxys_ready
+
 
 def joint_publish_thread_target(robot_interface: FrankaInterface):
+    """
+    Publish joint states to ROS.
+
+    Args:
+        robot_interface: The FrankaInterface object.
+    """
+
+    wait_for_deoxys_ready(robot_interface)
+
     pub = rospy.Publisher("panda/joint_states", JointState, queue_size=10)
     joint_names = [
         "panda_joint1",
@@ -30,25 +41,10 @@ def joint_publish_thread_target(robot_interface: FrankaInterface):
     np.set_printoptions(linewidth=200)
 
     counter = 0
-    failed_counter = 0
     while not rospy.is_shutdown():
         rate.sleep()
         arm_q = robot_interface.last_q
         last_gripper_q = robot_interface.last_gripper_q
-
-        # Check if the arm q or gripper angle is available
-        if arm_q is None or last_gripper_q is None:
-            if failed_counter % 10 == 0:
-                rospy.logwarn(
-                    f"Arm q or gripper angle isn't available. Is deoxys running on the RT pc? last_gripper_q: {last_gripper_q}, arm_q={arm_q}"
-                )
-            failed_counter += 1
-            if failed_counter > 100:
-                rospy.logerr("Failed to get arm q or gripper angle for 100 consecutive times. Shutting down.")
-                rospy.signal_shutdown("Failed to get arm q or gripper angle for 100 consecutive times")
-                return
-            continue
-        failed_counter = 0
 
         gripper_angle = float(last_gripper_q) / 2.0
         js_msg = JointState()

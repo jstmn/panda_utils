@@ -51,8 +51,6 @@ class DemonstrationLogger:
         dq = np.array([msg.velocity for msg in self._joint_states_msgs])
 
     def run(self):
-        counter = 0
-        empty_counter = 0
         while not rospy.is_shutdown():
             self.rate.sleep()
             if self._depth_img_np is None or self._color_img_np is None:

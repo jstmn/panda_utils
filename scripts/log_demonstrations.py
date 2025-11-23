@@ -1,6 +1,11 @@
 import argparse
 from time import sleep
 from typing import Callable
+import select
+import sys
+from pathlib import Path
+from datetime import datetime
+
 import rospy
 from sensor_msgs.msg import JointState, Image, CameraInfo
 from deoxys.franka_interface import FrankaInterface
@@ -9,16 +14,16 @@ from deoxys.utils.config_utils import get_default_controller_config
 from deoxys.utils.input_utils import input2action
 from deoxys.utils.io_devices import SpaceMouse
 import numpy as np
-from pathlib import Path
 import h5py
-from datetime import datetime
 import json
 import cv2
 import threading
 from termcolor import cprint
 
+
 from panda_utils.deoxys_controller import RESET_JOINT_POSITIONS
 from panda_utils.utils import to_public_dict
+from panda_utils.utils import wait_for_deoxys_ready
 
 """ This script starts teleoperation using the spacemouse, and provides a ui for logging robot demonstrations.
 
@@ -60,7 +65,6 @@ from panda_utils.utils import to_public_dict
 """
 
 CONTROLLER_TYPE = "OSC_POSE"
-MISSING_CAMERA_DATA_ERROR_PRESENT = False
 
 
 class DataCollector:
@@ -161,14 +165,23 @@ class DataCollector:
             self.camera_data[cam_id]["color_images"] = []
         cprint("🎬 Started recording", "green")
 
-    def record_sample(self) -> list[str]:
-        """Record one sample of all data."""
+    def record_sample(self) -> tuple[list[str], bool]:
+        """Record one sample of all data.
+
+        Returns:
+            tuple[list[str], bool]: A tuple containing a list of collected camera ids and a boolean indicating if the sample was collected successfully.
+                - list[str]: A list of collected camera ids.
+                - bool: True if the joint states were recorded successfully, False otherwise.
+        """
         if not self.is_recording:
-            return []
+            return [], False
+
+        joint_states_recorded = False
 
         # Record joint state
         if self._latest_joint_state is not None:
             self.joint_states_msgs.append(self._latest_joint_state)
+            joint_states_recorded = True
 
         # Record camera data
         collected_camera_ids = []
@@ -183,7 +196,7 @@ class DataCollector:
                     collected_camera_ids[-1] == cam_id
                 ), f"For some reason, depth wasn't read for {cam_id}, but color was"
 
-        return collected_camera_ids
+        return collected_camera_ids, joint_states_recorded
 
     def stop_recording(self):
         """Stop recording."""
@@ -193,7 +206,7 @@ class DataCollector:
     def save(self):
         """Save collected data to disk."""
         if len(self.joint_states_msgs) == 0:
-            cprint("⚠️  No data to save!", "red")
+            cprint("⚠️  0 joint states logged.", "red")
             return
 
         # Save HDF5
@@ -346,22 +359,6 @@ def teleop_control_thread_target(
             break
 
 
-def data_collection_thread_target(data_collector: DataCollector, rate_hz: float, camera_ids: list[str]):
-    """Background thread to collect data at fixed rate."""
-    rate = rospy.Rate(rate_hz)
-    global MISSING_CAMERA_DATA_ERROR_PRESENT
-    while not rospy.is_shutdown():
-        rate.sleep()
-        if not data_collector.is_recording:
-            continue
-        found_cams = data_collector.record_sample()
-        missing_cams = [x for x in camera_ids if x not in found_cams]
-        if len(missing_cams) > 0:
-            MISSING_CAMERA_DATA_ERROR_PRESENT = True
-            rospy.logerr(f"RGBD data is missing from specified cameras. Missing data from: {missing_cams}")
-    rospy.loginfo("Data collection thread finished")
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output_dir", type=str, required=True)
@@ -380,9 +377,9 @@ def main():
     parser.add_argument("--product-id", type=int, default=50741)
     parser.add_argument("--no-teleop", action="store_true", help="Disable teleop (for kinesthetic teaching)")
     args = parser.parse_args()
+
     #
     rospy.init_node("log_demonstrations", anonymous=False)
-    global MISSING_CAMERA_DATA_ERROR_PRESENT
 
     # Set default interface config if not provided
     project_dir = Path(__file__).parent.parent
@@ -415,6 +412,9 @@ def main():
     try:
         robot_interface = FrankaInterface(args.interface_cfg, use_visualizer=False)
         robot_interface._state_buffer = []  # Clear buffer like original panda_teleop.py
+        if not wait_for_deoxys_ready(robot_interface):
+            cprint("❌ Deoxys control is unavailable. Exiting now", "red")
+            return
         cprint("✅ Robot interface ready", "green")
     except Exception as e:
         cprint(f"❌ Failed to initialize robot interface: {e}", "red")
@@ -441,6 +441,14 @@ def main():
     # Initialize classes collector
     demo_index = 0
     data_collector = DataCollector(Path(args.output_dir), args.description, demo_index, args.camera_ids)
+    recording_rate = rospy.Rate(args.recording_rate_hz)
+
+    def shutdown():
+        robot_interface.close()
+        rospy.signal_shutdown("Done")
+        teleop_thread.join()
+        joint_thread.join()
+        exit()
 
     while not rospy.is_shutdown():
         cprint(f"\n{'='*60}", "cyan")
@@ -454,26 +462,36 @@ def main():
         reset_joints_to(robot_interface, RESET_JOINT_POSITIONS)
         SHOULD_CONTINUE = True
 
-        # Start data collection thread
-        data_thread = threading.Thread(
-            target=data_collection_thread_target, args=(data_collector, args.recording_rate_hz, args.camera_ids)
-        )
-        data_thread.daemon = True
-        data_thread.start()
-
         # Wait for user to start
         input("\n▶️  Press ENTER to START recording demo...")
         data_collector.start_recording()
+        print("\n⏸️  Press ENTER to STOP recording demo...")
 
-        # Wait for user to finish
-        input("\n⏸️  Press ENTER to STOP recording demo...")
-        data_collector.stop_recording()
+        # Start data collection
+        while not rospy.is_shutdown():
 
-        if MISSING_CAMERA_DATA_ERROR_PRESENT:
-            cprint("❌ Missing camera in last demonstration. Please check the logs for more details.", "red")
-            return
+            if select.select([sys.stdin], [], [], 0.0)[0] == [sys.stdin]:
+                key = sys.stdin.read(1)
+                if key == "\n":
+                    data_collector.stop_recording()
+                    break
+
+            recording_rate.sleep()
+            if not data_collector.is_recording:
+                print("Not recording", flush=True)
+                continue
+
+            found_cams, joint_states_recorded = data_collector.record_sample()
+            missing_cams = [x for x in args.camera_ids if x not in found_cams]
+            if len(missing_cams) > 0:
+                rospy.logerr(f"RGBD data is missing from: {missing_cams}. Exiting now")
+                shutdown()
+            if not joint_states_recorded:
+                rospy.logerr("Joint states are missing. Exiting now")
+                shutdown()
 
         # Save data
+        cprint(f"💾 Saving data to {args.output_dir}", "white")
         data_collector.save()
 
         cprint(f"✅ Demo #{demo_index} complete!", "green")
@@ -486,9 +504,8 @@ def main():
         demo_index += 1
 
     # Cleanup (done once at the end)
-    robot_interface.close()
     cprint(f"\n🏁 Collection complete! Total demos: {demo_index + 1}", "green", attrs=["bold"])
-    rospy.signal_shutdown("Done")
+    shutdown()
 
 
 if __name__ == "__main__":
