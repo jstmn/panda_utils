@@ -1,6 +1,6 @@
 import numpy as np
 
-from panda_utils.types import PandaLimits, CameraExtrinsics, CameraIntrinsics, WorkspaceBounds
+from panda_utils.types import PandaLimits, CameraIntrinsics, WorkspaceBounds
 from panda_utils.utils import cm_to_m
 
 
@@ -44,18 +44,18 @@ PANDA_LIMITS = PandaLimits(
 
 # parent frame: panda_link0
 # child frame: camera_depth_optical_frame
-CAMERA_EXTRINSICS = CameraExtrinsics(
-    matrix=np.array(
-        [
-            [0.7203, -0.2726, -0.6379, 1.012],
-            [-0.1104, -0.9529, 0.2825, -0.3013],
-            [-0.6848, -0.1331, -0.7164, 0.7536],
-            [0.0, 0.0, 0.0, 1.0],
-        ]
-    ),
-    parent_frame="panda_link0",
-    child_frame="camera_depth_optical_frame",
-)
+# CAMERA_EXTRINSICS = CameraExtrinsics(
+#     matrix=np.array(
+#         [
+#             [0.7203, -0.2726, -0.6379, 1.012],
+#             [-0.1104, -0.9529, 0.2825, -0.3013],
+#             [-0.6848, -0.1331, -0.7164, 0.7536],
+#             [0.0, 0.0, 0.0, 1.0],
+#         ]
+#     ),
+#     parent_frame="panda_link0",
+#     child_frame="camera_depth_optical_frame",
+# )
 
 REALSENSE_DEPTH_INTRINSICS = CameraIntrinsics(
     width=REALSENSE_DEPTH_WIDTH,
