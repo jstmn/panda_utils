@@ -121,6 +121,7 @@ class DeoxysController:
         # EE velocity control config
         self.ee_vel_control_controller_type = "JOINT_IMPEDANCE"
         self.ee_vel_control_config = YamlConfig("configs/joint-impedance-controller.yml").as_easydict()
+        self.joint_impedance_control_config = YamlConfig("configs/joint-impedance-controller.yml").as_easydict()
 
         # Visualize collisions
         self._visualize_collision_scene_thread = None
@@ -258,6 +259,64 @@ class DeoxysController:
                 controller_cfg=self.ee_vel_control_config,
             )
         print("end_effector_velocity_control() | Finished")
+
+    def joint_position_control(self, q_pos_targets: np.ndarray, tmax: float, should_stop: Callable[[], bool]):
+        """Control the robot to track the provided joint positions.
+
+        Args:
+            q_pos_targets (np.ndarray): [N, 9] - joint positions (rad) + gripper width
+            tmax (float): [s]
+            should_stop (callable): [bool] - whether to stop the control loop
+            gripper_width (float): [m] - gripper width
+        """
+        assert isinstance(q_pos_targets, np.ndarray)
+        assert q_pos_targets.shape[1] == 9
+
+        # Warm start. This first control step takes ~1s. The 1s delay only happens when switching from a different
+        # controller type. It also happens the first time the controller is used.
+        # t0_warm_start = time()
+        # self._franka_interface.control(
+        #     controller_type="JOINT_IMPEDANCE",
+        #     action=self._franka_interface.last_q.tolist() + [self._franka_interface.last_gripper_q],
+        #     controller_cfg=self.joint_impedance_control_config,
+        # )
+        # print(f"joint_position_control() | Warm start took {time() - t0_warm_start:.5f} s")
+
+        # Main loop
+        t0 = time()
+
+        print(f"joint_position_control() | Starting with {q_pos_targets=}")
+        for i in range(len(q_pos_targets)):
+            t_elapsed = time() - t0
+            if t_elapsed > tmax:
+                break
+
+            sleep(0.1)
+
+            if should_stop():
+                break
+
+            # Get current state
+            qpos_target_arm = q_pos_targets[i, :7]
+            qpos_target_gripper = q_pos_targets[i, 7]
+
+            is_safe, contact_pairs = self.config_is_safe(qpos_target_arm)
+            if not is_safe:
+                cprint("joint_position_control() | Configuration is not safe, exiting", "red")
+                cprint(f"{contact_pairs=}", "red")
+                return
+
+            # Send action
+            self._franka_interface.control(
+                controller_type="JOINT_IMPEDANCE",
+                action=qpos_target_arm.tolist() + [qpos_target_gripper],
+                controller_cfg=self.joint_impedance_control_config,
+            )
+
+            print(
+                f"joint_position_control() | {i=} / {len(q_pos_targets)=} \t {qpos_target_arm=} \t {qpos_target_gripper=}"
+            )
+        print("joint_position_control() | Finished")
 
 
 """

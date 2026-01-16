@@ -59,7 +59,7 @@ roslaunch franka_realsense_extrinsics main.launch \
 
 # Terminal 3 - Teleoperation + log demonstrations [Option 1]
 python scripts/log_demonstrations.py \
-  --output_dir ~/Desktop/data/<ADD YOUR DIRECORY NAME HERE> --description <DATA DESCRIPTION> \
+  --output_dir ~/Desktop/data/TEMPCOLLECT --description MYDESCRIPTION \
   --recording_rate_hz 15.0 --camera_ids south north eih
 
 # Terminal 3 - Teleoperation [Option 2]

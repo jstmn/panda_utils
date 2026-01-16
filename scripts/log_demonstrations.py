@@ -68,17 +68,12 @@ CONTROLLER_TYPE = "OSC_POSE"
 class DataCollector:
     """Collects camera images and joint states during demonstration."""
 
-    def __init__(self, output_dir: Path, description: str, camera_ids: list | None = None):
-        if camera_ids is None:
-            for cam_id in camera_ids:
-                assert "_" not in cam_id, f"Camera id cannot contain underscore: {cam_id}"
+    def __init__(self, output_dir: Path, description: str, camera_ids: list):
+        for cam_id in camera_ids:
+            assert "_" not in cam_id, f"Camera id cannot contain underscore: {cam_id}"
 
         self.output_dir = output_dir / f"{description}__{datetime.now().strftime('%m-%d_%H:%M:%S')}"
         self.output_dir.mkdir(parents=True, exist_ok=True)
-
-        if camera_ids is None:
-            camera_ids = [""]
-            cprint("No camera ids were provided! Only joint states will be recorded", "yellow")
         self._camera_ids = camera_ids
 
         # Storage
@@ -298,7 +293,6 @@ def joint_publish_thread_target(robot_interface: FrankaInterface):
     ]
     rate = rospy.Rate(50)
 
-    counter = 0
     while not rospy.is_shutdown():
         rate.sleep()
         arm_q = robot_interface.last_q
@@ -315,8 +309,6 @@ def joint_publish_thread_target(robot_interface: FrankaInterface):
         js_msg.velocity = robot_interface.last_dq.tolist() + [0.0, 0.0]
         js_msg.effort = [0.0] * 9
         pub.publish(js_msg)
-
-        counter += 1
 
 
 def teleop_control_thread_target(
@@ -342,7 +334,7 @@ def teleop_control_thread_target(
                 controller_cfg=controller_cfg,
             )
         except Exception as e:
-            rospy.logerr(f"Teleop error: {e}")
+            cprint(f"Teleop error: {e}", "red")
             break
 
 
@@ -363,7 +355,16 @@ def main():
     parser.add_argument("--vendor-id", type=int, default=9583)
     parser.add_argument("--product-id", type=int, default=50741)
     parser.add_argument("--no-teleop", action="store_true", help="Disable teleop (for kinesthetic teaching)")
+    parser.add_argument("--reset_joints", type=str, default="true", help="Reset joints to initial position")
+    parser.add_argument("--run_teleop", type=str, default="true")
     args = parser.parse_args()
+    args.run_teleop = args.run_teleop.lower() == "true"
+    args.reset_joints = args.reset_joints.lower() == "true"
+
+    camera_ids = args.camera_ids
+    if camera_ids is None:
+        camera_ids = []
+        cprint("No camera ids were provided! Only joint states will be recorded", "yellow")
 
     #
     rospy.init_node("log_demonstrations", anonymous=False)
@@ -418,22 +419,24 @@ def main():
     def should_continue():
         return SHOULD_CONTINUE
 
-    teleop_thread = threading.Thread(
-        target=teleop_control_thread_target,
-        args=(robot_interface, device, should_continue),
-    )
-    teleop_thread.daemon = True
-    teleop_thread.start()
+    if args.run_teleop:
+        teleop_thread = threading.Thread(
+            target=teleop_control_thread_target,
+            args=(robot_interface, device, should_continue),
+        )
+        teleop_thread.daemon = True
+        teleop_thread.start()
 
     # Initialize classes collector
     demo_index = 0
-    data_collector = DataCollector(Path(args.output_dir), args.description, args.camera_ids)
+    data_collector = DataCollector(Path(args.output_dir), args.description, camera_ids)
     recording_rate = rospy.Rate(args.recording_rate_hz)
 
     def shutdown():
         robot_interface.close()
         rospy.signal_shutdown("Done")
-        teleop_thread.join()
+        if args.run_teleop:
+            teleop_thread.join()
         joint_thread.join()
         exit()
 
@@ -443,11 +446,12 @@ def main():
         cprint(f"{'='*60}", "cyan")
 
         # Reset robot
-        cprint("🔄 Resetting robot...", "yellow")
-        SHOULD_CONTINUE = False
-        sleep(0.1)
-        reset_joints_to(robot_interface, RESET_JOINT_POSITIONS)
-        SHOULD_CONTINUE = True
+        if args.reset_joints:
+            cprint("🔄 Resetting robot...", "yellow")
+            SHOULD_CONTINUE = False
+            sleep(0.1)
+            reset_joints_to(robot_interface, RESET_JOINT_POSITIONS)
+            SHOULD_CONTINUE = True
 
         # Wait for user to start
         input("\n▶️  Press ENTER to START recording demo...")
@@ -455,7 +459,7 @@ def main():
         print("\n⏸️  Press ENTER to STOP recording demo...")
 
         # Start data collection
-        while not rospy.is_shutdown():
+        while True:
 
             if select.select([sys.stdin], [], [], 0.0)[0] == [sys.stdin]:
                 key = sys.stdin.read(1)
@@ -469,7 +473,7 @@ def main():
                 continue
 
             found_cams, joint_states_recorded = data_collector.record_sample()
-            missing_cams = [x for x in args.camera_ids if x not in found_cams]
+            missing_cams = [x for x in camera_ids if x not in found_cams]
             if len(missing_cams) > 0:
                 rospy.logerr(f"RGBD data is missing from: {missing_cams}. Exiting now")
                 shutdown()
