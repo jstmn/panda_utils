@@ -3,7 +3,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime
 from time import time
-
+import os
+from panda_utils.deoxys_controller import DeoxysController
 import rospy
 from sensor_msgs.msg import JointState
 from deoxys.franka_interface import FrankaInterface
@@ -127,6 +128,7 @@ def plot_results(recording: Recording, name: str):
         axs[i, 0].plot(recording.times, q_des_pos_user_i, label="desired, user")
         axs[i, 1].plot(recording.times, q_vel_i, label="measured")
         axs[i, 1].plot(recording.times, q_d_vel_i, label="desired")
+        axs[i, 0].legend()
 
         # Set y limits with 0.5 deg, 0.5 deg/s buffer
         pos_min = min(np.min(q_pos_i), np.min(q_des_pos_i), np.min(q_des_pos_user_i))
@@ -222,7 +224,6 @@ def plot_results(recording: Recording, name: str):
         ax.grid(True, alpha=0.3)
         ax.grid(True, which="minor", alpha=0.1)
         ax.minorticks_on()
-        ax.legend()
         ax.yaxis.get_major_formatter().set_useOffset(False)
 
     lst = [random.choice(string.ascii_letters + string.digits) for n in range(6)]
@@ -233,8 +234,7 @@ def plot_results(recording: Recording, name: str):
     Path(f"data/deoxys_tuning/{name}").mkdir(parents=True, exist_ok=True)
     plt.savefig(save_filepath)
     print(f"Saved plot to '{save_filepath}'")
-    print(f"xdg-open '{save_filepath}'")
-    print()
+    os.system(f"xdg-open '{save_filepath}'")
 
 
 def joint_publish_thread_target(robot_interface: FrankaInterface):
@@ -291,6 +291,8 @@ class DeoxysControllerTester:
     def __init__(self, franka_interface: FrankaInterface):
         self.franka_interface = franka_interface
         self.jrl_panda = Panda()
+        # self._deoxys_controller = DeoxysController(self.franka_interface, launch_viser=True, viser_use_visual=False)
+        self._deoxys_controller = DeoxysController(self.franka_interface, launch_viser=False, viser_use_visual=False)
 
         self.should_start_recording = False
         self.should_end_recording = False
@@ -300,6 +302,9 @@ class DeoxysControllerTester:
         self.desired_q_pos_user = np.zeros(7)
         self.recording_thread = threading.Thread(target=self.recording_thread_target)
         self.recording_thread.start()
+
+    def exit(self):
+        self._deoxys_controller.__del__()
 
     def recording_thread_target(self):
         rate_hz = 500
@@ -723,6 +728,38 @@ class DeoxysControllerTester:
         return self.times, None, None, None, None, None, None, None
 
 
+    def joint_velocity_control_PID(self, plot_results: bool = False):
+
+        q_vel_targets = np.array([[np.deg2rad(3.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]).repeat(100, axis=0)
+        tmax = 5.0
+        def should_stop():
+            return False
+
+        if plot_results:
+            self.start_recording("JOINT_VELOCITY", tmax)
+
+        self._deoxys_controller.joint_velocity_control_PID(q_vel_targets, tmax, should_stop, 10, save_plot=True)
+
+        if plot_results:
+            self.stop_recording()
+
+    def joint_velocity_control(self, plot_results: bool = False):
+
+        q_vel_targets = np.array([[np.deg2rad(3.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]]).repeat(100, axis=0)
+        tmax = 5.0
+        def should_stop():
+            return False
+
+        if plot_results:
+            self.start_recording("JOINT_VELOCITY", tmax)
+
+        self._deoxys_controller.joint_velocity_control(q_vel_targets, tmax, should_stop, 10, save_plot=True)
+
+        if plot_results:
+            self.stop_recording()
+
+
+
 def main(deoxys_interface_cfg: str, dont_plot: bool, method: str):
     """Testing the different control types.
 
@@ -766,8 +803,10 @@ def main(deoxys_interface_cfg: str, dont_plot: bool, method: str):
     # Start the joint state publisher thread
     # joint_publish_thread = threading.Thread(target=joint_publish_thread_target, args=(franka_interface,))
     # joint_publish_thread.start()
-    eval(f"controller.{method}(plot_results=not dont_plot)")
+    eval(f"controller.{method}(plot_results={not dont_plot})")
 
+    print("Exiting")
+    controller.exit()
 
 """ 
 source /opt/ros/noetic/setup.bash; source ${ROS_WS}/devel/setup.bash; conda activate hardware_env; cd ${PANDA_UTILS_DIR}
@@ -775,7 +814,11 @@ source /opt/ros/noetic/setup.bash; source ${ROS_WS}/devel/setup.bash; conda acti
 # Run
 python scripts/deoxys_tuning.py \
     --deoxys-interface-cfg configs/charmander.yml \
-    --dont-plot --method CARTESIAN_VELOCITY_2
+    --dont-plot --method cartesian_velocity_control
+
+python scripts/deoxys_tuning.py \
+    --deoxys-interface-cfg configs/charmander.yml \
+    --method joint_velocity_control
 """
 
 

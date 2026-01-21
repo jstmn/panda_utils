@@ -14,7 +14,7 @@ The h5 format is as follows:
 
 # Example usage:
 python scripts/replay_joint_configurations.py \
-    --h5_file /home/resl/Desktop/data/xinyi_data/test_1__01-15_20:25:37/traj_0.h5
+    --h5_file /home/resl/Desktop/data/xinyi_data/test_realdeal2__01-15_20:53:17/traj_1.h5s
 
 h5dump --width=200 -d /joint_states_q /home/resl/Desktop/data/xinyi_data/test_1__01-15_20:25:37/traj_0.h5
 """

@@ -2,12 +2,14 @@ from typing import Callable
 from time import time, sleep
 from pathlib import Path
 import threading
-
+import os
+from datetime import datetime
 from trimesh.primitives import Box
 import numpy as np
 from termcolor import cprint
 from tf.transformations import euler_from_matrix
 import matplotlib
+import matplotlib.pyplot as plt
 import open3d as o3d
 
 matplotlib.use("Agg")
@@ -117,6 +119,7 @@ class DeoxysController:
         self._table_name = self._collision_checker.add_box(_get_floor_box())
         self._collision_checker.ignore_pair((self._table_name, "panda_link0::link0.stl"))
         self._collision_checker.ignore_pair((self._table_name, "panda_link0::link0.stl__col"))
+        self._collision_checker.ignore_pair((self._table_name, "panda_link0::link0.dae"))
 
         # EE velocity control config
         self.ee_vel_control_controller_type = "JOINT_IMPEDANCE"
@@ -272,16 +275,6 @@ class DeoxysController:
         assert isinstance(q_pos_targets, np.ndarray)
         assert q_pos_targets.shape[1] == 9
 
-        # Warm start. This first control step takes ~1s. The 1s delay only happens when switching from a different
-        # controller type. It also happens the first time the controller is used.
-        # t0_warm_start = time()
-        # self._franka_interface.control(
-        #     controller_type="JOINT_IMPEDANCE",
-        #     action=self._franka_interface.last_q.tolist() + [self._franka_interface.last_gripper_q],
-        #     controller_cfg=self.joint_impedance_control_config,
-        # )
-        # print(f"joint_position_control() | Warm start took {time() - t0_warm_start:.5f} s")
-
         # Main loop
         t0 = time()
 
@@ -291,7 +284,7 @@ class DeoxysController:
             if t_elapsed > tmax:
                 break
 
-            sleep(0.1)
+            sleep(0.05)
 
             if should_stop():
                 break
@@ -317,6 +310,205 @@ class DeoxysController:
                 f"joint_position_control() | {i=} / {len(q_pos_targets)=} \t {qpos_target_arm=} \t {qpos_target_gripper=}"
             )
         print("joint_position_control() | Finished")
+
+
+
+    def joint_velocity_control(self, q_vel_targets: np.ndarray, tmax: float, should_stop: Callable[[], bool], gripper_width: float, save_plot: bool = False):
+        """Control the robot to track the provided joint velocities.
+
+        Args:
+            q_vel_targets (np.ndarray): [N, 9] - joint velocities (rad/s) + gripper width
+            tmax (float): [s]
+            should_stop (callable): [bool] - whether to stop the control loop
+            gripper_width (float): [rad] - gripper position
+        """
+        assert isinstance(q_vel_targets, np.ndarray)
+        assert q_vel_targets.shape[1] == 7
+        t_delay = 0.0
+
+        # Main loop
+        t0 = time()
+        measured_frequency = 15.0 # an approximate
+
+        scale = 2.0
+        print(f"joint_velocity_control() | Starting with {q_vel_targets=}")
+        for i in range(len(q_vel_targets)):
+            t_elapsed = time() - t0
+            print(f" {i} | {t_elapsed=} \t {tmax=}")
+            if t_elapsed > tmax:
+                break
+
+            sleep(t_delay)
+
+            if should_stop():
+                print(f" {i} | should_stop()")
+                break
+
+            qvel_desired = q_vel_targets[i, :]
+            dt = 1.0 / measured_frequency
+            qpos_current = self._franka_interface.last_q
+            qpos_target = qpos_current + (scale*qvel_desired * dt)
+
+            # Get current state
+            is_safe, contact_pairs = self.config_is_safe(qpos_target)
+            if not is_safe:
+                cprint("joint_position_control() | Configuration is not safe, exiting", "red")
+                cprint(f"{contact_pairs=}", "red")
+                return
+
+            # Send action
+            self._franka_interface.control(
+                controller_type="JOINT_IMPEDANCE",
+                action=qpos_target.tolist() + [gripper_width],
+                controller_cfg=self.joint_impedance_control_config,
+            )
+            measured_frequency = (i+1) / t_elapsed
+            print(f" {i} | {measured_frequency=}")
+
+        print("joint_velocity_control() | Finished")
+
+
+
+    def joint_velocity_control_PID(self, q_vel_targets: np.ndarray, tmax: float, should_stop: Callable[[], bool], gripper_width: float, save_plot: bool = False):
+        """Control the robot to track the provided joint velocities.
+
+        Args:
+            q_vel_targets (np.ndarray): [N, 9] - joint velocities (rad/s) + gripper width
+            tmax (float): [s]
+            should_stop (callable): [bool] - whether to stop the control loop
+            gripper_width (float): [rad] - gripper position
+        """
+        assert isinstance(q_vel_targets, np.ndarray)
+        assert q_vel_targets.shape[1] == 7
+        t_delay = 0.0
+
+        # Main loop
+        t0 = time()
+        measured_frequency = 15.0 # an approximate
+
+        if save_plot:
+            qpos_history = []
+            control_signal_history = []
+            qvel_current_history = []
+            qvel_desired_history = []
+            t_elapsed_history = []
+
+        scale = 0.25
+        Kp = scale * np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+        Kd = scale * 1 * np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+        Ki = scale * 0.001*np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+        qvel_error_integral = np.zeros(7)
+        qvel_error_previous = np.zeros(7)
+
+        print(f"joint_velocity_control() | Starting with {q_vel_targets=}")
+        for i in range(len(q_vel_targets)):
+            t_elapsed = time() - t0
+            print(f" {i} | {t_elapsed=} \t {tmax=}")
+            if t_elapsed > tmax:
+                break
+
+            sleep(t_delay)
+
+            if should_stop():
+                print(f" {i} | should_stop()")
+                break
+
+            qvel_desired = q_vel_targets[i, :]
+            qvel_current = self._franka_interface.last_dq
+            dt = 1.0 / measured_frequency
+
+            # 
+            qvel_error_now = qvel_desired - qvel_current
+            qvel_error_integral += qvel_error_now * dt
+            qvel_error_derivative = (qvel_error_now - qvel_error_previous) / dt
+
+            # current_vel = self._franka_interface.last_dq
+            control_signal = Kp * qvel_error_now + Ki * qvel_error_integral + Kd * qvel_error_derivative
+
+
+            print(f" {i} | \n  qvel_error_now:\t{qvel_error_now}\n  qvel_error_integral:\t{qvel_error_integral}\n  qvel_error_derivative:\t{qvel_error_derivative}\n  control_signal:\t{control_signal}")
+
+            # print(f" {i} | \n{qpos_current=} \t \n{desired_qvel=} \t \n{q_delta=} \t \n{qpos_target=}")
+
+            # Get current state
+            qpos_current = self._franka_interface.last_q
+            qpos_target = qpos_current + control_signal
+            is_safe, contact_pairs = self.config_is_safe(qpos_target)
+            if not is_safe:
+                cprint("joint_position_control() | Configuration is not safe, exiting", "red")
+                cprint(f"{contact_pairs=}", "red")
+                return
+
+            if save_plot:
+                qpos_history.append(qpos_current.copy())
+                control_signal_history.append(control_signal.copy())
+                qvel_current_history.append(qvel_current.copy())
+                qvel_desired_history.append(qvel_desired.copy())
+                t_elapsed_history.append(t_elapsed)
+
+            # Send action
+            self._franka_interface.control(
+                controller_type="JOINT_IMPEDANCE",
+                action=qpos_target.tolist() + [gripper_width],
+                controller_cfg=self.joint_impedance_control_config,
+            )
+            qvel_error_previous = qvel_error_now.copy()
+            measured_frequency = (i+1) / t_elapsed
+            print(f" {i} | {measured_frequency=}")
+
+
+        if save_plot and t_elapsed_history:
+            qpos_history = np.array(qpos_history)
+            control_signal_history = np.array(control_signal_history)
+            qvel_current_history = np.array(qvel_current_history)
+            qvel_desired_history = np.array(qvel_desired_history)
+            t_elapsed_history = np.array(t_elapsed_history)
+
+            qpos_history_deg = np.rad2deg(qpos_history)
+            control_signal_deg = np.rad2deg(control_signal_history)
+            qvel_current_deg = np.rad2deg(qvel_current_history)
+            qvel_desired_deg = np.rad2deg(qvel_desired_history)
+
+            fig, axes = plt.subplots(nrows=7, ncols=2, figsize=(12, 18), sharex=True)
+            for joint_idx in range(7):
+                axes[joint_idx, 0].plot(t_elapsed_history, qpos_history_deg[:, joint_idx])
+                axes[joint_idx, 0].set_ylabel(f"q{joint_idx}")
+
+                axes[joint_idx, 1].plot(
+                    t_elapsed_history,
+                    control_signal_deg[:, joint_idx],
+                    label="control",
+                )
+                axes[joint_idx, 1].plot(
+                    t_elapsed_history,
+                    qvel_current_deg[:, joint_idx],
+                    label="current_vel",
+                )
+                axes[joint_idx, 1].plot(
+                    t_elapsed_history,
+                    qvel_desired_deg[:, joint_idx],
+                    label="target_vel",
+                )
+                axes[joint_idx, 0].minorticks_on()
+                axes[joint_idx, 1].minorticks_on()
+                axes[joint_idx, 0].grid(True, which="major", linestyle="-", linewidth=0.6, alpha=0.6)
+                axes[joint_idx, 0].grid(True, which="minor", linestyle=":", linewidth=0.4, alpha=0.4)
+                axes[joint_idx, 1].grid(True, which="major", linestyle="-", linewidth=0.6, alpha=0.6)
+                axes[joint_idx, 1].grid(True, which="minor", linestyle=":", linewidth=0.4, alpha=0.4)
+
+            axes[0, 0].set_title("Measured joint configuration")
+            axes[0, 1].set_title("Control + joint velocities")
+            axes[0, 1].legend(loc="upper right")
+            axes[-1, 0].set_xlabel("time (s)")
+            axes[-1, 1].set_xlabel("time (s)")
+            plt.tight_layout()
+            save_filepath = f"joint_velocity_control_plot__{datetime.now().strftime('%d_%H:%M:%S')}.png"
+            plt.savefig(save_filepath)
+            plt.close()
+            os.system(f"xdg-open '{save_filepath}'")
+
+        print("joint_velocity_control() | Finished")
+
 
 
 """
