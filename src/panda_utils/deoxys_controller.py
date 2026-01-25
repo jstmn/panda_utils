@@ -369,7 +369,7 @@ class DeoxysController:
 
 
 
-    def joint_velocity_control_PID(self, q_vel_targets: np.ndarray, tmax: float, should_stop: Callable[[], bool], gripper_width: float, save_plot: bool = False):
+    def joint_velocity_control(self, q_vel_targets: np.ndarray, tmax: float, should_stop: Callable[[], bool], gripper_width: float, save_plot: bool = False):
         """Control the robot to track the provided joint velocities.
 
         Args:

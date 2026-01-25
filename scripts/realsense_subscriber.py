@@ -50,6 +50,9 @@ class DemonstrationLogger:
         q = np.array([msg.position for msg in self._joint_states_msgs])
         dq = np.array([msg.velocity for msg in self._joint_states_msgs])
 
+    def latest_rgb(self) -> np.ndarray:
+        return self._color_img_np
+
     def run(self):
         while not rospy.is_shutdown():
             self.rate.sleep()

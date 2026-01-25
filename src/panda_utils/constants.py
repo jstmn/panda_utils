@@ -1,6 +1,6 @@
 import numpy as np
 
-from panda_utils.types import PandaLimits, CameraIntrinsics, WorkspaceBounds
+from panda_utils.types import PandaLimits, WorkspaceBounds
 from panda_utils.utils import cm_to_m
 
 
@@ -10,17 +10,7 @@ from panda_utils.utils import cm_to_m
 # cameras when in HD mode, however the fps increases to 640 x 480. Therefore, the final parameters we'll use is
 # 640 x 480 @ 30fps for depth (FOV: 75 x 62), color: 1280 x 720 @ 15 fps (FOV: 69 x 42).
 
-
-REALSENSE_DEPTH_WIDTH = 640
-REALSENSE_DEPTH_HEIGHT = 480
-REALSENSE_DEPTH_FPS = 30
-REALSENSE_DEPTH_FOV_VERTICAL_RAD = np.deg2rad(58.0)
-REALSENSE_DEPTH_FOV_HORIZONTAL_RAD = np.deg2rad(87.0)
-REALSENSE_COLOR_WIDTH = 1280
-REALSENSE_COLOR_HEIGHT = 720
-REALSENSE_COLOR_FPS = 15
-REALSENSE_COLOR_FOV_VERTICAL_RAD = np.deg2rad(69.0)
-REALSENSE_COLOR_FOV_HORIZONTAL_RAD = np.deg2rad(42.0)
+DEFAULT_DEOXYS_INTERFACE_CFG = "configs/charmander.yml"
 
 
 # Panda robot limits based on official specifications
@@ -42,38 +32,6 @@ PANDA_LIMITS = PandaLimits(
 )
 
 
-# parent frame: panda_link0
-# child frame: camera_depth_optical_frame
-# CAMERA_EXTRINSICS = CameraExtrinsics(
-#     matrix=np.array(
-#         [
-#             [0.7203, -0.2726, -0.6379, 1.012],
-#             [-0.1104, -0.9529, 0.2825, -0.3013],
-#             [-0.6848, -0.1331, -0.7164, 0.7536],
-#             [0.0, 0.0, 0.0, 1.0],
-#         ]
-#     ),
-#     parent_frame="panda_link0",
-#     child_frame="camera_depth_optical_frame",
-# )
-
-REALSENSE_DEPTH_INTRINSICS = CameraIntrinsics(
-    width=REALSENSE_DEPTH_WIDTH,
-    height=REALSENSE_DEPTH_HEIGHT,
-    fx=390.25830078125,
-    fy=390.25830078125,
-    cx=324.033264160156,
-    cy=233.439270019531,
-)
-
-REALSENSE_COLOR_INTRINSICS = CameraIntrinsics(
-    width=REALSENSE_COLOR_WIDTH,
-    height=REALSENSE_COLOR_HEIGHT,
-    fx=912.776611328125,
-    fy=912.644897460938,
-    cx=641.741088867188,
-    cy=369.680297851562,
-)
 
 DEPTH_MAX_M = 1.4
 

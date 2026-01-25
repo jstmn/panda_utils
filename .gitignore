@@ -21,3 +21,5 @@ thirdparty/*/
 notes
 .ruff_cache/
 logs/
+
+*.pt
