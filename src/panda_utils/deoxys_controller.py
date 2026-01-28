@@ -103,6 +103,10 @@ def _get_floor_box() -> Box:
     center[2] = WORKSPACE_BOUNDS.min_z_m - height / 2 + TABLE_PADDING
     return Box(extents=extents, transform=get_translated_pose(center))
 
+def _get_fake_box() -> Box:
+    extents = np.array([0.2, 0.2, 0.2])
+    center = np.array([0.8, 0.0, 0.5])
+    return Box(extents=extents, transform=get_translated_pose(center))
 
 class DeoxysController:
 
@@ -117,6 +121,7 @@ class DeoxysController:
         self._viser_use_visual = viser_use_visual
         self._collision_checker = SingleSceneCollisionChecker(self._jrl2_panda, use_visual=viser_use_visual)
         self._table_name = self._collision_checker.add_box(_get_floor_box())
+        # self._collision_checker.add_box(_get_fake_box())
         self._collision_checker.ignore_pair((self._table_name, "panda_link0::link0.stl"))
         self._collision_checker.ignore_pair((self._table_name, "panda_link0::link0.stl__col"))
         self._collision_checker.ignore_pair((self._table_name, "panda_link0::link0.dae"))
@@ -262,6 +267,89 @@ class DeoxysController:
                 controller_cfg=self.ee_vel_control_config,
             )
         print("end_effector_velocity_control() | Finished")
+
+    def end_effector_xy_yaw_velocity_control(
+        self, twist: np.ndarray, z_fixed: float, initial_ee_rotation: np.array, tmax: float, should_stop: Callable[[], bool], gripper_width: float
+    ):
+        """Control the end effector velocity to a desired twist.
+
+        Args:
+            twist (np.ndarray): [6] - [dx, dy, dyaw] (m, rad)
+            tmax (float): [s]
+            should_stop (callable): [bool] - whether to stop the control loop
+            gripper_width (float): [m] - gripper width
+        """
+        assert isinstance(twist, np.ndarray)
+        assert twist.shape == (3,)
+        assert initial_ee_rotation.shape == (3,3)
+
+        # Warm start. This first control step takes ~1s. The 1s delay only happens when switching from a different
+        # controller type. It also happens the first time the controller is used.
+        t0_warm_start = time()
+        self._franka_interface.control(
+            controller_type=self.ee_vel_control_controller_type,
+            action=self._franka_interface.last_q.tolist() + [gripper_width],
+            controller_cfg=self.ee_vel_control_config,
+        )
+        print(f"end_effector_velocity_control() | Warm start took {time() - t0_warm_start:.5f} s")
+
+        # Main loop
+        ee_position_initial = self._franka_interface.last_eef_pose
+        t0 = time()
+
+        position_twist = np.array([twist[0], twist[1], 0.0]) # dx dy dz
+        rotation_twist = -np.array([0, 0, twist[2]]) # droll dpitch dyaw
+        # ^ for some reason rotations are reversed by default so we add a - here to correct the rotational direction
+
+        print(f"end_effector_xy_yaw_velocity_control() | Starting with {twist=}")
+        while True:
+            t_elapsed = time() - t0
+            if t_elapsed > tmax:
+                break
+
+            if should_stop():
+                break
+
+            # Get current state
+            qpos_current = self._franka_interface.last_q
+            ee_pose_current = self._franka_interface.last_eef_pose
+
+            is_safe, contact_pairs = self.config_is_safe(qpos_current)
+            if not is_safe:
+                cprint("end_effector_xy_yaw_velocity_control() | Configuration is not safe, exiting", "red")
+                cprint(f"{contact_pairs=}", "red")
+                return
+
+            # Compute desired state
+            ee_pose_desired = ee_position_initial.copy()
+            ee_pose_desired[:3, 3] = ee_pose_desired[:3, 3] + position_twist * t_elapsed
+            ee_pose_desired[3, 3] = z_fixed
+            ee_pose_desired[:3, :3] = rotate_matrix_by_angular_velocity(initial_ee_rotation, rotation_twist, t_elapsed)
+
+            # Compute IK using Levenberg-Marquardt
+            pose_errors_pos = ee_pose_desired[:3, 3] - ee_pose_current[:3, 3]
+            error_rot_R = ee_pose_desired[:3, :3] @ ee_pose_current[:3, :3].T  # note: .T equals .inv() bc of SO(3)
+            error_rot_euler = euler_from_matrix(error_rot_R)
+            pose_error = np.concatenate([pose_errors_pos, error_rot_euler])
+
+            # Run Levenberg-Marquardt
+            lambd = 0.0001
+            alpha = 1.0
+            J = self.current_jacobian()  # [6, 7]
+            J_T = J.T  # [7, 6]
+            eye = np.eye(self._jrl_panda.ndof)
+            lfs_A = J_T @ J + lambd * eye  # [7, 7]
+            rhs_B = J_T @ pose_error  # [7]
+            delta_q = np.linalg.solve(lfs_A, rhs_B)  # [7]
+            q_target = qpos_current + alpha * delta_q
+
+            # Send action
+            self._franka_interface.control(
+                controller_type=self.ee_vel_control_controller_type,
+                action=q_target.tolist() + [gripper_width],
+                controller_cfg=self.ee_vel_control_config,
+            )
+
 
     def joint_position_control(self, q_pos_targets: np.ndarray, tmax: float, should_stop: Callable[[], bool]):
         """Control the robot to track the provided joint positions.

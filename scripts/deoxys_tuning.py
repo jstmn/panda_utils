@@ -288,11 +288,11 @@ def joint_publish_thread_target(robot_interface: FrankaInterface):
 
 class DeoxysControllerTester:
 
-    def __init__(self, franka_interface: FrankaInterface):
+    def __init__(self, franka_interface: FrankaInterface, launch_viser: bool):
         self.franka_interface = franka_interface
         self.jrl_panda = Panda()
-        # self._deoxys_controller = DeoxysController(self.franka_interface, launch_viser=True, viser_use_visual=False)
-        self._deoxys_controller = DeoxysController(self.franka_interface, launch_viser=False, viser_use_visual=False)
+        self._deoxys_controller = DeoxysController(self.franka_interface, launch_viser=launch_viser, viser_use_visual=False)
+        # ^ don't use visual, it's really slow for collision checking
 
         self.should_start_recording = False
         self.should_end_recording = False
@@ -758,9 +758,32 @@ class DeoxysControllerTester:
         if plot_results:
             self.stop_recording()
 
+    def xy_yaw_control(self, plot_results: bool = False):
+
+        # Quaternion in w, x, y z (real, then vector) format
+        # QUAT_DEFAULT = torch.tensor([-0.017689, 0.999802, 0.00428796, 0.00798423], device="cpu", dtype=torch.float32)
+        R_initial = np.array([
+            [1,  0,  0],
+            [0, -1, 0],
+            [0,  0, -1]
+        ])
+        tmax = 10.0
+        twist = np.array([0.5/tmax, 0.0, np.deg2rad(90)/tmax])
+        z_fixed = 0.6
+        gripper_width = 10.0
+
+        def should_stop():
+            return False
+
+        if plot_results:
+            self.start_recording("XY-YAW control", tmax*1.5)
+
+        self._deoxys_controller.end_effector_xy_yaw_velocity_control(twist, z_fixed, R_initial, tmax, should_stop, gripper_width)
+        if plot_results:
+            self.stop_recording()
 
 
-def main(deoxys_interface_cfg: str, dont_plot: bool, method: str):
+def main(deoxys_interface_cfg: str, dont_plot: bool, method: str, launch_viser: bool):
     """Testing the different control types.
 
     OSC_POSE: controls the end effector in the world frame. Note that there is drift in the end effector rotation and
@@ -784,7 +807,7 @@ def main(deoxys_interface_cfg: str, dont_plot: bool, method: str):
     rospy.init_node("franka_mpc_node", anonymous=True)
     rospy.on_shutdown(shutdown_handler)
     franka_interface = FrankaInterface(deoxys_interface_cfg, use_visualizer=False)
-    controller = DeoxysControllerTester(franka_interface)  # noqa: F841
+    controller = DeoxysControllerTester(franka_interface, launch_viser=launch_viser)  # noqa: F841
     # __init__ takes a few seconds so we warmstart it here.
     wait_for_robot_ready(franka_interface)
 
@@ -818,7 +841,7 @@ python scripts/deoxys_tuning.py \
 
 python scripts/deoxys_tuning.py \
     --deoxys-interface-cfg configs/charmander.yml \
-    --method joint_velocity_control
+    --method xy_yaw_control
 """
 
 
@@ -828,5 +851,6 @@ if __name__ == "__main__":
     parser.add_argument("--deoxys-interface-cfg", type=str, required=True)
     parser.add_argument("--dont-plot", action="store_true")
     parser.add_argument("--method", type=str, required=True)
+    parser.add_argument("--no_launch_viser", action="store_true")
     args = parser.parse_args()
-    main(args.deoxys_interface_cfg, args.dont_plot, args.method)
+    main(args.deoxys_interface_cfg, args.dont_plot, args.method, not args.no_launch_viser)
