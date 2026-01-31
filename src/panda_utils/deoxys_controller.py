@@ -28,7 +28,7 @@ from panda_utils.constants import WORKSPACE_BOUNDS
 PI_ON_4 = np.pi / 4
 PI_ON_2 = np.pi / 2
 VALID_QPOS_LIMIT_PADDING = 0.005
-TABLE_PADDING = 0.03
+TABLE_PADDING = 0.015
 
 RESET_JOINT_POSITIONS = [
     0.09162008114028396,
@@ -39,7 +39,6 @@ RESET_JOINT_POSITIONS = [
     2.30396583422025,
     0.8480939705504309,
 ]
-
 should_close = False
 np.set_printoptions(linewidth=200, precision=4, suppress=True)
 
@@ -191,8 +190,85 @@ class DeoxysController:
         J_position_first = np.concatenate([J_rotation_first[3:6, :], J_rotation_first[0:3, :]], axis=0)
         return J_position_first
 
+
+    def reach_ee_pose(
+        self, target_ee_pose: np.ndarray, tmax: float, should_stop: Callable[[], bool], gripper_width: float, debug: bool = False
+    ):
+        """Control the end effector velocity to a desired twist.
+
+        Args:
+            twist (np.ndarray): [6] - [x, y, z, rx, ry, rz] (m, rad)
+            tmax (float): [s]
+            should_stop (callable): [bool] - whether to stop the control loop
+            gripper_width (float): [m] - gripper width
+        """
+        assert isinstance(target_ee_pose, np.ndarray)
+        assert target_ee_pose.shape == (4,4)
+
+        # Warm start. This first control step takes ~1s. The 1s delay only happens when switching from a different
+        # controller type. It also happens the first time the controller is used.
+        self._franka_interface.control(
+            controller_type=self.ee_vel_control_controller_type,
+            action=self._franka_interface.last_q.tolist() + [gripper_width],
+            controller_cfg=self.ee_vel_control_config,
+        )
+
+        # Main loop
+        t0 = time()
+
+        while True:
+            t_elapsed = time() - t0
+            if t_elapsed > tmax:
+                break
+
+            if should_stop():
+                break
+
+            # Get current state
+            qpos_current = self._franka_interface.last_q
+            ee_pose_current = self._franka_interface.last_eef_pose
+
+            is_safe, contact_pairs = self.config_is_safe(qpos_current)
+            if not is_safe:
+                cprint("reach_ee_pose() | Configuration is not safe, exiting", "red")
+                cprint(f"{contact_pairs=}", "red")
+                return
+
+            # Compute IK using Levenberg-Marquardt
+            pose_errors_pos = target_ee_pose[:3, 3] - ee_pose_current[:3, 3]
+            error_rot_R = target_ee_pose[:3, :3] @ ee_pose_current[:3, :3].T  # note: .T equals .inv() bc of SO(3)
+            error_rot_euler = euler_from_matrix(error_rot_R)
+            pose_error = np.concatenate([pose_errors_pos, error_rot_euler])
+
+            pose_error_norm = np.linalg.norm(pose_error)
+            if pose_error_norm > 0.05:
+                scale = 0.05
+                pose_error /= np.linalg.norm(pose_error)
+                pose_error *= scale
+            if pose_error_norm < 0.01:
+                break
+
+            # Run Levenberg-Marquardt
+            lambd = 0.0001
+            alpha = 1.0
+            J = self.current_jacobian()  # [6, 7]
+            J_T = J.T  # [7, 6]
+            eye = np.eye(self._jrl_panda.ndof)
+            lfs_A = J_T @ J + lambd * eye  # [7, 7]
+            rhs_B = J_T @ pose_error  # [7]
+            delta_q = np.linalg.solve(lfs_A, rhs_B)  # [7]
+            q_target = qpos_current + alpha * delta_q
+
+            # Send action
+            self._franka_interface.control(
+                controller_type=self.ee_vel_control_controller_type,
+                action=q_target.tolist() + [gripper_width],
+                controller_cfg=self.ee_vel_control_config,
+            )
+
+
     def end_effector_velocity_control(
-        self, twist: np.ndarray, tmax: float, should_stop: Callable[[], bool], gripper_width: float
+        self, twist: np.ndarray, tmax: float, should_stop: Callable[[], bool], gripper_width: float, debug: bool = False
     ):
         """Control the end effector velocity to a desired twist.
 
@@ -280,8 +356,11 @@ class DeoxysController:
             gripper_width (float): [m] - gripper width
         """
         assert isinstance(twist, np.ndarray)
-        assert twist.shape == (3,)
-        assert initial_ee_rotation.shape == (3,3)
+        assert twist.shape == (3,), f"Expected shape (3,), got {twist.shape}"
+        assert initial_ee_rotation.shape == (3,3), f"Expected shape (3,3), got {initial_ee_rotation.shape}"
+
+        current_ee_pose = self._franka_interface.last_eef_pose
+        initial_ee_rotation = current_ee_pose[:3, :3]
 
         # Warm start. This first control step takes ~1s. The 1s delay only happens when switching from a different
         # controller type. It also happens the first time the controller is used.
@@ -291,7 +370,6 @@ class DeoxysController:
             action=self._franka_interface.last_q.tolist() + [gripper_width],
             controller_cfg=self.ee_vel_control_config,
         )
-        print(f"end_effector_velocity_control() | Warm start took {time() - t0_warm_start:.5f} s")
 
         # Main loop
         ee_position_initial = self._franka_interface.last_eef_pose
@@ -301,7 +379,6 @@ class DeoxysController:
         rotation_twist = -np.array([0, 0, twist[2]]) # droll dpitch dyaw
         # ^ for some reason rotations are reversed by default so we add a - here to correct the rotational direction
 
-        print(f"end_effector_xy_yaw_velocity_control() | Starting with {twist=}")
         while True:
             t_elapsed = time() - t0
             if t_elapsed > tmax:
@@ -323,8 +400,14 @@ class DeoxysController:
             # Compute desired state
             ee_pose_desired = ee_position_initial.copy()
             ee_pose_desired[:3, 3] = ee_pose_desired[:3, 3] + position_twist * t_elapsed
-            ee_pose_desired[3, 3] = z_fixed
+            ee_pose_desired[2, 3] = z_fixed
+            ee_pose_desired[3, 3] = 1.0
             ee_pose_desired[:3, :3] = rotate_matrix_by_angular_velocity(initial_ee_rotation, rotation_twist, t_elapsed)
+            assert abs(np.linalg.det(ee_pose_desired[:3, :3]) - 1.0) < 1e-4, "ee_pose_desired is not a rotation matrix"
+            # [ r1 r2 r3 | x]
+            # [ r4 r5 r6 | y]
+            # [ r7 r8 r9 | z]  z is at [2, 3]
+            # [ 0  0  0  | 1]
 
             # Compute IK using Levenberg-Marquardt
             pose_errors_pos = ee_pose_desired[:3, 3] - ee_pose_current[:3, 3]

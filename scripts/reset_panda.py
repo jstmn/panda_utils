@@ -26,10 +26,14 @@ from panda_utils.utils import wait_for_deoxys_ready, to_public_dict, save_combin
 
 
 
+"""
+source /opt/ros/noetic/setup.bash; source hardware_venv/bin/activate;
+python scripts/reset_panda.py
+"""
+
 
 if __name__ == "__main__":
     rospy.init_node("reset_panda", anonymous=True)
     robot_interface = FrankaInterface(DEFAULT_DEOXYS_INTERFACE_CFG, use_visualizer=False)
     wait_for_deoxys_ready(robot_interface)
-    reset_joints_to(robot_interface, RESET_JOINT_POSITIONS)
     reset_joints_to(robot_interface, RESET_JOINT_POSITIONS)

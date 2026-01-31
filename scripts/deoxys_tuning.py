@@ -782,20 +782,33 @@ class DeoxysControllerTester:
         if plot_results:
             self.stop_recording()
 
+    def reach_ee_pose(self, plot_results: bool = False):
+
+        # Quaternion in w, x, y z (real, then vector) format
+        # QUAT_DEFAULT = torch.tensor([-0.017689, 0.999802, 0.00428796, 0.00798423], device="cpu", dtype=torch.float32)
+        target_pose = np.array([
+            [1,  0,  0, 0.6],
+            [0, -1, 0,  0.0],
+            [0,  0, -1, 0.025],
+            [0,  0, 0, 1.0],
+        ])
+        tmax = 10.0
+        gripper_width = 10.0
+
+        def should_stop():
+            return False
+
+        if plot_results:
+            self.start_recording("Single EE Pose", tmax*1.5)
+
+        self._deoxys_controller.reach_ee_pose(target_pose, tmax, should_stop, gripper_width)
+        if plot_results:
+            self.stop_recording()
+
+
 
 def main(deoxys_interface_cfg: str, dont_plot: bool, method: str, launch_viser: bool):
     """Testing the different control types.
-
-    OSC_POSE: controls the end effector in the world frame. Note that there is drift in the end effector rotation and
-            position, so that the EE pose will change along dimensions which were not specified in the action.
-
-
-    Args:
-        task (str): The ManiSkill task to run.
-        num_wm_envs (int): The number of world model environments to use. These will be used to decide an action for the
-                            'real' environment
-
-
     """
     global should_close
 
@@ -841,7 +854,7 @@ python scripts/deoxys_tuning.py \
 
 python scripts/deoxys_tuning.py \
     --deoxys-interface-cfg configs/charmander.yml \
-    --method xy_yaw_control
+    --method reach_ee_pose
 """
 
 

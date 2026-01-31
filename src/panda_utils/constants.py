@@ -31,8 +31,6 @@ PANDA_LIMITS = PandaLimits(
     rotation_jerk_max=np.array([0.0, 0.0, 0.0, 12500.0, 12500.0, 12500.0, 0.0]),
 )
 
-
-
 DEPTH_MAX_M = 1.4
 
 # See https://docs.google.com/drawings/d/1Mvzcg4S3asflx9s8VEFmOry6SM-qBRHE3Jz-pSo5bjY/edit?usp=sharing for details

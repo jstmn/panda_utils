@@ -23,3 +23,7 @@ notes
 logs/
 
 *.pt
+
+*checkpoint*
+
+*.gz

@@ -64,6 +64,10 @@ from panda_utils.utils import wait_for_deoxys_ready, to_public_dict, save_combin
 
 CONTROLLER_TYPE = "OSC_POSE"
 
+# FOR OPEN-DRAWER. DRAWER SHOULD BE VISIBLE BY THE NORTH CAMERA
+#RESET_JOINT_POSITIONS = [0.35648074,  0.53879886,  0.16414258, -1.67889499, -1.5206821,  1.23415236,  1.51561697]
+
+
 
 class DataCollector:
     """Collects camera images and joint states during demonstration."""
@@ -210,6 +214,12 @@ class DataCollector:
             f.create_dataset("joint_states_q", data=q)
             f.create_dataset("joint_states_dq", data=dq)
 
+            gripper_q = q[:, -1]
+            gripper_q_range = gripper_q.max() - gripper_q.min()
+            if gripper_q_range < 0.01:
+                cprint(f"ERROR: GRIPPER DOESN'T SEEM TO BE MOVING. RANGE: {gripper_q_range}", "red")
+                cprint(f"Gripper q: {gripper_q}", "red")
+
             # Camera data
             for cam_id in self._camera_ids:
                 if len(self.camera_data[cam_id]["depth_images"]) > 0:
@@ -336,6 +346,20 @@ def teleop_control_thread_target(
         except Exception as e:
             cprint(f"Teleop error: {e}", "red")
             break
+
+"""
+python scripts/log_demonstrations.py \
+  --output_dir ~/Desktop/data/colosseumV2_jan29 --description StackCube_20more \
+  --recording_rate_hz 15.0 --camera_ids south
+
+  --output_dir ~/Desktop/data/colosseumV2_jan29 --description RaiseCube_20more \
+
+
+# Save to /tmp for debugging
+python scripts/log_demonstrations.py \
+  --output_dir /tmp --description RaiseCube_20more \
+  --recording_rate_hz 15.0 --camera_ids south
+"""
 
 
 def main():

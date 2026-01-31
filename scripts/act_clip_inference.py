@@ -6,10 +6,10 @@ import torchvision.transforms as T
 from std_msgs.msg import Float64MultiArray
 from time import sleep, time
 # 학습 코드에서 사용한 라이브러리들
-from scripts.act.detr_vae import DETRVAE
-from act.backbone import build_backbone
-from act.transformer import build_transformer
-from act.detr_vae import build_encoder
+from scripts.act_clip.detr_vae import DETRVAE
+from act_clip.backbone import build_backbone
+from act_clip.transformer import build_transformer
+from act_clip.detr_vae import build_encoder
 
 from deoxys.franka_interface import FrankaInterface
 from deoxys.utils.config_utils import get_default_controller_config
@@ -52,7 +52,7 @@ class Args:
     # camera_id: str = "north"
     # starting_qpos_alias: str = "OpenDrawer"
 
-    checkpoint_path: str = "scripts/act/checkpoint/act-RaiseCube-v1--real/checkpoints/100000.pt"
+    checkpoint_path: str = "scripts/act_clip/act_clip_checkpoint_v2/30000.pt"
     camera_id: str = "south"
     starting_qpos_alias: str = "default"
 
@@ -162,6 +162,7 @@ class Agent_Inference(torch.nn.Module):
             backbones, transformer, encoder,
             state_dim=self.state_dim, action_dim=self.act_dim,
             num_queries=args.num_queries,
+            use_lang_instruction=True,
         )
 
     def get_action(self, obs):
@@ -186,15 +187,13 @@ if __name__ == "__main__":
 
 
     # FOR OPEN-DRAWER. DRAWER SHOULD BE VISIBLE BY THE NORTH CAMERA (i think?1)
-    RESET_JOINT_POSITIONS = [0.35648074,  0.53879886,  0.16414258, -1.67889499, -1.5206821,  1.23415236,  1.51561697]
-
+    #RESET_JOINT_POSITIONS = [0.35648074,  0.53879886,  0.16414258, -1.67889499, -1.5206821,  1.23415236,  1.51561697]
 
     wait_for_deoxys_ready(franka_interface)
-    reset_joints_to(franka_interface, RESET_JOINT_POSITIONS)
+    reset_joints_to(franka_interface, RESET_JOINT_POSITIONS, gripper_open=True)
 
     SHUTDOWN = False
     action = None
-    sleep(2)
 
     def _on_shutdown():
         global SHUTDOWN
@@ -202,26 +201,46 @@ if __name__ == "__main__":
 
     rospy.on_shutdown(_on_shutdown)
 
+
     def control_loop():
         global SHUTDOWN
         GRIPPER_INDEX = 7
-        rate = rospy.Rate(60)
+        while franka_interface.last_gripper_q is None:
+            sleep(0.01)
+        current_gripper_state = "open" if franka_interface.last_gripper_q > 0.03 else "close"
+
+        open_to_closed_threshold = 0.0325
+        closed_to_open_threshold = 0.027
+
         while not SHUTDOWN and not rospy.is_shutdown():
             try:
-                rate.sleep()
+                CONTROL_RATE.sleep()
             except rospy.ROSInterruptException:
                 break
 
             if action is None:
                 continue
-            action_cp = action.copy()
-            print(action_cp)
-            if action_cp[GRIPPER_INDEX] > 0.03:
-                action_cp[GRIPPER_INDEX] = -1 # -1 is OPEN with deoxys control
-            else:
-                action_cp[GRIPPER_INDEX] = 1 # 1 is CLOSE with deoxys control
 
-            # print(f"action: {action}")
+            action_cp = action.copy()
+            # print(action_cp)
+            gripper_commanded = action_cp[GRIPPER_INDEX]
+
+            if gripper_commanded < 0.0325:
+                action_cp[GRIPPER_INDEX] = 1
+            else:
+                action_cp[GRIPPER_INDEX] = -1
+
+            # if current_gripper_state == "open":
+            #     if gripper_commanded < closed_to_open_threshold:
+            #         action_cp[GRIPPER_INDEX] = 1
+            #         current_gripper_state = "close"
+            #         print("CLOSING GRIPPER")
+            # else:
+            #     if gripper_commanded > open_to_closed_threshold:
+            #         action_cp[GRIPPER_INDEX] = -1
+            #         current_gripper_state = "open"
+            #         print("OPENING GRIPPER")
+
             try:
                 franka_interface.control(
                     controller_type=controller_type,
@@ -233,16 +252,16 @@ if __name__ == "__main__":
                 SHUTDOWN = True
                 break
 
+    INFERENCE_RATE = rospy.Rate(15)
+    CONTROL_RATE = rospy.Rate(15)
     control_thread = threading.Thread(target=control_loop, daemon=True)
     control_thread.start()
 
     prev_gripper_pos = None
     prev_time = None
-    rate = rospy.Rate(60)
 
     try:
         while not rospy.is_shutdown():
-            rate.sleep()
             rgb = rgb_subscriber.latest_rgb(args.camera_id)
             q_desired = franka_interface.last_q_d
             arm_q = franka_interface.last_q
@@ -254,7 +273,7 @@ if __name__ == "__main__":
                     f"last_gripper_q: {last_gripper_q} is None"
                 )  # rgb: {rgb} is None")
                 try:
-                    rate.sleep()
+                    INFERENCE_RATE.sleep()
                 except rospy.ROSInterruptException:
                     print("[act_inference] rate.sleep() exception")
                     break
@@ -276,13 +295,12 @@ if __name__ == "__main__":
             last_q = np.concatenate([arm_q, [gripper_pos, gripper_pos]])
             last_dq = np.concatenate([arm_dq, [gripper_dq, gripper_dq]])
             state = np.concatenate([last_q, last_dq]).astype(np.float32)
-
             action = inference_node.get_real_action(rgb, state)
 
             # print(f"q_error: {np.rad2deg(action[0:7] - arm_q)}")
             #
             try:
-                rate.sleep()
+                INFERENCE_RATE.sleep()
             except rospy.ROSInterruptException:
                 break
     except (KeyboardInterrupt, rospy.ROSInterruptException):
