@@ -57,6 +57,7 @@ def joint_publish_thread_target(robot_interface: FrankaInterface):
         js_msg.velocity = robot_interface.last_dq.tolist() + [0.0, 0.0]
         js_msg.effort = [0.0] * 9
         pub.publish(js_msg)
+        print("Gripper angle: ", gripper_angle)
 
         if counter % 200 == 0:
             rospy.loginfo(f"Arm q: {arm_q}")

@@ -10,6 +10,8 @@ from scripts.act_clip.detr_vae import DETRVAE
 from act_clip.backbone import build_backbone
 from act_clip.transformer import build_transformer
 from act_clip.detr_vae import build_encoder
+from deoxys.utils.yaml_config import YamlConfig
+import os
 
 from deoxys.franka_interface import FrankaInterface
 from deoxys.utils.config_utils import get_default_controller_config
@@ -23,6 +25,13 @@ torch.set_printoptions(precision=8, sci_mode=False, linewidth=200)
 np.set_printoptions(precision=8, suppress=True, linewidth=200)
 
 # CUSTOM_
+
+lang = "stack red cobe on top of green cube"
+
+STARTING_CONFIGS = {
+    "OpenDrawer".upper(): [0.35648074,  0.53879886,  0.16414258, -1.67889499, -1.5206821,  1.23415236,  1.51561697],
+    "default".upper(): RESET_JOINT_POSITIONS,
+}
 
 class Args:
     hidden_dim: int = 512           # --hidden_dim 512
@@ -49,12 +58,14 @@ class Args:
     kl_weight: float = 10.0
 
     # checkpoint_path: str = "scripts/act/checkpoint/act-OpenDrawer-v1--real/checkpoints/100000.pt"
-    # camera_id: str = "north"
-    # starting_qpos_alias: str = "OpenDrawer"
+    checkpoint_path: str = "scripts/act_clip/act_clip_checkpoint_v2/000.pt"
+    camera_id: str = "north"
+    starting_qpos_alias: str = "OpenDrawer"
 
-    checkpoint_path: str = "scripts/act_clip/act_clip_checkpoint_v2/30000.pt"
-    camera_id: str = "south"
-    starting_qpos_alias: str = "default"
+    # multitask, 30000k steps.
+    # checkpoint_path: str = "scripts/act_clip/act_clip_checkpoint_v2/50000.pt"
+    # camera_id: str = "south"
+    # starting_qpos_alias: str = "default"
 
 
 class ACTRealInference:
@@ -153,7 +164,7 @@ class Agent_Inference(torch.nn.Module):
         super().__init__()
         self.state_dim = 18
         self.act_dim = 8
-        
+
         backbones = [build_backbone(args)]
         transformer = build_transformer(args)
         encoder = build_encoder(args)
@@ -167,7 +178,7 @@ class Agent_Inference(torch.nn.Module):
 
     def get_action(self, obs):
         # 이미 preprocess에서 정규화됨
-        a_hat, _ = self.model(obs)
+        a_hat, _ = self.model(obs, lang_instruction=None)
         return a_hat
 
 if __name__ == "__main__":
@@ -184,13 +195,13 @@ if __name__ == "__main__":
     franka_interface = FrankaInterface(DEFAULT_DEOXYS_INTERFACE_CFG, use_visualizer=False)
     controller_type = "JOINT_IMPEDANCE" # THIS IS BETTER THAN JOINT_POSITION
     controller_cfg = get_default_controller_config(controller_type=controller_type)
+    # controller_cfg = YamlConfig("configs/joint-impedance-controller.yml").as_easydict()
 
 
     # FOR OPEN-DRAWER. DRAWER SHOULD BE VISIBLE BY THE NORTH CAMERA (i think?1)
-    #RESET_JOINT_POSITIONS = [0.35648074,  0.53879886,  0.16414258, -1.67889499, -1.5206821,  1.23415236,  1.51561697]
 
     wait_for_deoxys_ready(franka_interface)
-    reset_joints_to(franka_interface, RESET_JOINT_POSITIONS, gripper_open=True)
+    reset_joints_to(franka_interface, STARTING_CONFIGS[args.starting_qpos_alias.upper()], gripper_open=True)
 
     SHUTDOWN = False
     action = None
@@ -207,8 +218,8 @@ if __name__ == "__main__":
         GRIPPER_INDEX = 7
         while franka_interface.last_gripper_q is None:
             sleep(0.01)
-        current_gripper_state = "open" if franka_interface.last_gripper_q > 0.03 else "close"
 
+        current_gripper_state = "open" if franka_interface.last_gripper_q > 0.03 else "close"
         open_to_closed_threshold = 0.0325
         closed_to_open_threshold = 0.027
 
@@ -222,7 +233,15 @@ if __name__ == "__main__":
                 continue
 
             action_cp = action.copy()
-            # print(action_cp)
+
+            #Hayden
+            #action_cp[0] = action_cp[0] - 0.005 # for peg
+            #action_cp[0] = action_cp[0] + 0.0001 # for stack
+
+            #action_cp[1] = action_cp[1] + 0.02 # for raise cube
+            #action_cp[0] = action_cp[0] - 0.03
+            # print(f"action: {action[-1]}")
+
             gripper_commanded = action_cp[GRIPPER_INDEX]
 
             if gripper_commanded < 0.0325:
@@ -252,8 +271,10 @@ if __name__ == "__main__":
                 SHUTDOWN = True
                 break
 
-    INFERENCE_RATE = rospy.Rate(15)
-    CONTROL_RATE = rospy.Rate(15)
+    # r = 30
+    r = 15
+    INFERENCE_RATE = rospy.Rate(r)
+    CONTROL_RATE = rospy.Rate(r)
     control_thread = threading.Thread(target=control_loop, daemon=True)
     control_thread.start()
 
@@ -297,7 +318,7 @@ if __name__ == "__main__":
             state = np.concatenate([last_q, last_dq]).astype(np.float32)
             action = inference_node.get_real_action(rgb, state)
 
-            # print(f"q_error: {np.rad2deg(action[0:7] - arm_q)}")
+            print(f"q_error: {np.rad2deg(action[0:7] - arm_q)}")
             #
             try:
                 INFERENCE_RATE.sleep()

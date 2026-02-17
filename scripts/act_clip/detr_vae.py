@@ -146,7 +146,7 @@ class DETRVAE(nn.Module):
             if lang_instruction is not None and lang_instruction[0] != "":
                 if isinstance(lang_instruction, str):
                     lang_instruction = [lang_instruction] * bs
-                #print(f"Language Condition is {lang_instruction}")
+                print(f"Language Condition is {lang_instruction}")
                 lang_batch = clip.tokenize(lang_instruction).to(state.device)
                 with torch.no_grad():
                     lang_emb = self.lang_encoder.encode_text(lang_batch)

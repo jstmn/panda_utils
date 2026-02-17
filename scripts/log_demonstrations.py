@@ -65,7 +65,7 @@ from panda_utils.utils import wait_for_deoxys_ready, to_public_dict, save_combin
 CONTROLLER_TYPE = "OSC_POSE"
 
 # FOR OPEN-DRAWER. DRAWER SHOULD BE VISIBLE BY THE NORTH CAMERA
-#RESET_JOINT_POSITIONS = [0.35648074,  0.53879886,  0.16414258, -1.67889499, -1.5206821,  1.23415236,  1.51561697]
+RESET_JOINT_POSITIONS = [0.35648074,  0.53879886,  0.16414258, -1.67889499, -1.5206821,  1.23415236,  1.51561697]
 
 
 
@@ -218,7 +218,18 @@ class DataCollector:
             gripper_q_range = gripper_q.max() - gripper_q.min()
             if gripper_q_range < 0.01:
                 cprint(f"ERROR: GRIPPER DOESN'T SEEM TO BE MOVING. RANGE: {gripper_q_range}", "red")
+                cprint(f"If the gripper didn't move, you can ignore this error.", "red")
+                cprint(f"If the gripper was moving, the suggested fix is to restart the franka. Do this by visiting " \
+                       f"https://172.16.0.2/desk/ then doing `reboot`", "red")
+                cprint(f"Gripper dq: {dq[:, -1]}", "red")
                 cprint(f"Gripper q: {gripper_q}", "red")
+
+            gripper_dq = dq[:, -1]
+            gripper_dq_range = gripper_dq.max() - gripper_dq.min()
+            if gripper_dq_range < 0.01:
+                cprint(f"ERROR: GRIPPER VELOCITY NEVER CHANGES. RANGE: {gripper_dq_range}", "red")
+                cprint(f"If the gripper intentionally didn't move, you can ignore this error.", "red")
+                cprint(f"Gripper dq: {gripper_dq}", "red")
 
             # Camera data
             for cam_id in self._camera_ids:
@@ -412,6 +423,10 @@ def main():
         exit(1)
 
     #
+    cprint(f"\n=============================================================================", "red")
+    cprint(f"WARNING: THE GRIPPER JOINT VELOCITY IS NOT RECORDED. IT WILL ALWAYS BE (0, 0)", "red")
+    cprint(f"=============================================================================\n", "red")
+
     cprint("\n" + "=" * 60, "cyan")
     cprint("🤖 Demo Collection with Teleop", "cyan", attrs=["bold"])
     cprint("=" * 60, "cyan")
