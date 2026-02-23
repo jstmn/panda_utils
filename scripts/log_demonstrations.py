@@ -227,9 +227,9 @@ class DataCollector:
             gripper_dq = dq[:, -1]
             gripper_dq_range = gripper_dq.max() - gripper_dq.min()
             if gripper_dq_range < 0.01:
-                cprint(f"ERROR: GRIPPER VELOCITY NEVER CHANGES. RANGE: {gripper_dq_range}", "red")
-                cprint(f"If the gripper intentionally didn't move, you can ignore this error.", "red")
-                cprint(f"Gripper dq: {gripper_dq}", "red")
+                cprint(f"================================================", "yellow")
+                cprint(f"WARNING: THE GRIPPER VELOCITY NEVER CHANGES (due to programming laziness). RANGE: {gripper_dq_range}", "yellow")
+                cprint(f"================================================", "yellow")
 
             # Camera data
             for cam_id in self._camera_ids:

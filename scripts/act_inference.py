@@ -1,17 +1,18 @@
 import rospy
+import os
+from datetime import datetime
 import threading
 import torch
 import numpy as np
 import torchvision.transforms as T
 from std_msgs.msg import Float64MultiArray
 from time import sleep, time
-# 학습 코드에서 사용한 라이브러리들
 from scripts.act.detr_vae import DETRVAE
 from act.backbone import build_backbone
 from act.transformer import build_transformer
 from act.detr_vae import build_encoder
 from deoxys.utils.yaml_config import YamlConfig
-import os
+import cv2
 
 from deoxys.franka_interface import FrankaInterface
 from deoxys.utils.config_utils import get_default_controller_config
@@ -56,7 +57,7 @@ class Args:
     kl_weight: float = 10.0
 
     # checkpoint_path: str = "scripts/checkpoints/act_stackcube/100000.pt"
-    checkpoint_path: str = "scripts/checkpoints/act_raisecube/100000.pt"
+    checkpoint_path: str = "scripts/checkpoints/act_raisecube/200000.pt"
     #checkpoint_path: str = "scripts/act/checkpoint/act-RotateArrow-v1--real/checkpoints/100000.pt"
     camera_id: str = "base"
     starting_qpos_alias: str = "default"
@@ -106,9 +107,22 @@ class ACTRealInference:
         self.state_dim = 18
         self.act_dim = 9
 
+        self._img_dir = f"logs/act_inference/{datetime.now().strftime('%Y:%m:%d_%H:%M:%S')}"
+        os.makedirs(self._img_dir, exist_ok=True)
+
     def preprocess(self, rgb_img):
         img_t = torch.from_numpy(rgb_img.copy()).permute(2, 0, 1).float() # (3, H, W)
         img_t = self.resize(img_t) / 255.0
+
+        # TEMP: SAVE THE IMAGE
+        # SAVE_IMAGES = True
+        SAVE_IMAGES = False
+        if SAVE_IMAGES:
+            img_t_np = img_t.cpu().numpy().transpose(1, 2, 0)
+            img_t_np = (img_t_np * 255.0).astype(np.uint8)
+            cv2.imwrite(f"{self._img_dir}/rgb_{self.step_idx:03d}.png", img_t_np)
+        #
+
         img_t = self.normalize(img_t)
 
         #print(f"img_t: {img_t.shape}")
