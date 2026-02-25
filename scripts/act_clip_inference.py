@@ -30,7 +30,7 @@ np.set_printoptions(precision=8, suppress=True, linewidth=200)
 
 
 """
-python scripts/act_clip_inference_interactive.py
+python scripts/act_clip_inference.py
 """
 
 
@@ -66,13 +66,13 @@ class Args:
     #checkpoint_path: str = "scripts/checkpoints_multiview/hyeonho_real_results/act_real_multi-task_lang-15368560/checkpoints/100000.pt"
     checkpoint_path: str = "scripts/checkpoints_multiview/hyeonho_real_results/act_real_multi-task_lang-15368560/checkpoints/150000.pt"
     camera_ids: list[str] = ["eih", "base", "north"]
-    starting_qpos_alias: str = "default"
+    starting_qpos_alias: str = "OpenDrawer"
 
     #lang_instruction = "stack red cube on top of green cube"
-    # lang_instruction = "rotate the arrow lever to the target direction"
-    #lang_instruction = "lift the cube up to a certain height"
-    # lang_instruction = "grasp the handle and pull the drawer open"
-    lang_instruction = "lift the peg and stand it upright on the table"
+    #lang_instruction = "rotate the arrow lever to the target direction"
+    # lang_instruction = "lift the cube up to a certain height"
+    lang_instruction = "grasp the handle and pull the drawer open"
+    # lang_instruction = "lift the peg and stand it upright on the table"
 
 class ACTRealInference:
     def __init__(self, ckpt_path, args, device="cuda"):
@@ -80,43 +80,27 @@ class ACTRealInference:
         self.args = args 
 
         ckpt = torch.load(ckpt_path, map_location=self.device)
-
-        print(ckpt.keys())
-        print(ckpt['norm_stats'].keys())
-        stats = ckpt["norm_stats"]
-        print("action_mean:", stats["action_mean"])
-        print("action_std:", stats["action_std"])
-        print("state_mean:", stats["state_mean"])
-        print("state_std:", stats["state_std"])
-        print("example_state:", stats["example_state"])
-
+        # stats = ckpt["norm_stats"]
 
         #self.stats = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in ckpt['norm_stats'].items()}
-        self.stats= ckpt['norm_stats']
+        self.stats = ckpt['norm_stats']
         self.stats['state_std'] = torch.clip(self.stats['state_std'], min=1e-2)
         self.stats['action_std'] = torch.clip(self.stats['action_std'], min=1e-2)
 
         self.stats = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in self.stats.items()}
-        print("action_mean shpae:", ckpt['norm_stats']['action_mean'].shape)
-
         self.agent = Agent_Inference(args).to(self.device)
         self.agent.load_state_dict(ckpt['ema_agent'])
         self.agent.eval()
 
-
         self.resize = T.Resize((224, 224), antialias=True)
         self.normalize = T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-
 
         self.num_queries = args.num_queries
         self.step_idx = 0
         self.max_timesteps = 10000
 
-        #self.all_time_actions = torch.zeros([self.max_timesteps, self.max_timesteps + self.num_queries, 8]).to(self.device)
         self.state_dim = 18
         self.act_dim = 9
-
-        #TODO: can you check if this is correct?
         self.all_time_actions = torch.zeros([self.max_timesteps, self.max_timesteps + self.num_queries,self.act_dim]).to(self.device)
 
     def preprocess(self, rgb_imgs):
@@ -201,6 +185,18 @@ class Agent_Inference(torch.nn.Module):
         return a_hat
 
 
+def enter_is_pressed() -> bool:
+    if select.select([sys.stdin], [], [], 0.0)[0] == [sys.stdin]:
+        key = sys.stdin.read(1)
+        if key == "\n":
+            return True
+    return False
+
+
+def np_array_to_hash(arr: np.ndarray) -> int:
+    """ For a rgb array, the sum of the array is a good hash.
+    """
+    return np.sum(arr)
 
 if __name__ == "__main__":
     rospy.init_node("maniskill_act_inference", anonymous=False)
@@ -247,16 +243,30 @@ if __name__ == "__main__":
             action_cp = action.copy()
 
             try:
-                gripper_left = action_cp[7]
-                gripper_right = action_cp[8]
-                assert -0.001 < gripper_left < 0.041, f"gripper_left: {gripper_left} should be between -0.001 and 0.041"
-                assert -0.001 < gripper_right < 0.041, f"gripper_right: {gripper_right} should be between -0.001 and 0.041"
-                # print("gripper_left/right: ", gripper_left, gripper_right)
+                gripper_left_act = action_cp[7]
+                gripper_right_act = action_cp[8]
+                assert -0.001 < gripper_left_act < 0.041, f"gripper_left_act: {gripper_left_act} should be between -0.001 and 0.041"
+                assert -0.001 < gripper_right_act < 0.041, f"gripper_right_act: {gripper_right_act} should be between -0.001 and 0.041"
 
-                if gripper_left < THRESHOLD_OPEN or gripper_right < THRESHOLD_OPEN:
-                    gripper_cmd = GRIPPER_CLOSE_CMD
+                gripper_state = float(franka_interface.last_gripper_q) / 2.0
+                currently_open = gripper_state > THRESHOLD_OPEN
+                print(f"gripper_act: ({gripper_left_act:0.5f} {gripper_right_act:0.5f})\tgripper_pos: {gripper_state:0.4f}\tcurrently_open: {currently_open}", end="\t")
+
+                if currently_open:
+                    if gripper_left_act < THRESHOLD_OPEN or gripper_right_act < THRESHOLD_OPEN:
+                        print("(open) --> closing")
+                        gripper_cmd = GRIPPER_CLOSE_CMD
+                    else:
+                        print("(open) --> staying open")
+                        gripper_cmd = GRIPPER_OPEN_CMD
                 else:
-                    gripper_cmd = GRIPPER_OPEN_CMD
+                    if gripper_left_act > 0.022 or gripper_right_act > 0.022:
+                        print("(closed) --> opening")
+                        gripper_cmd = GRIPPER_OPEN_CMD
+                    else:
+                        print("(closed) --> staying closed")
+                        gripper_cmd = GRIPPER_CLOSE_CMD
+
                 deoxys_action = np.concatenate([action_cp[0:7], [gripper_cmd]], axis=0)
 
                 franka_interface.control(
@@ -264,6 +274,23 @@ if __name__ == "__main__":
                     action=deoxys_action,
                     controller_cfg=controller_cfg,
                 )
+                # gripper_left = action_cp[7]
+                # gripper_right_act = action_cp[8]
+                # assert -0.001 < gripper_left < 0.041, f"gripper_left: {gripper_left} should be between -0.001 and 0.041"
+                # assert -0.001 < gripper_right_act < 0.041, f"gripper_right_act: {gripper_right_act} should be between -0.001 and 0.041"
+                # print("gripper_left/right: ", gripper_left, gripper_right_act)
+
+                # if gripper_left < THRESHOLD_OPEN or gripper_right_act < THRESHOLD_OPEN:
+                #     gripper_cmd = GRIPPER_CLOSE_CMD
+                # else:
+                #     gripper_cmd = GRIPPER_OPEN_CMD
+                # deoxys_action = np.concatenate([action_cp[0:7], [gripper_cmd]], axis=0)
+
+                # franka_interface.control(
+                #     controller_type=controller_type,
+                #     action=deoxys_action,
+                #     controller_cfg=controller_cfg,
+                # )
             except Exception as e:
                 print(f"[act_inference] control_loop exception: {e!r}")
                 SHUTDOWN = True
@@ -291,10 +318,27 @@ if __name__ == "__main__":
         except Exception:
             pass
 
+
+    camera_rgb_pseudo_hashes = {cid: 0 for cid in args.camera_ids}
+    pseudo_hash_match_counts = {cid: 0 for cid in args.camera_ids}
+
     while not rospy.is_shutdown():
         rgbs = [rgb_subscriber.latest_rgb(cid) for cid in args.camera_ids]
         if any(rgb is None for rgb in rgbs):
             assert False, "rgb is None"
+
+
+        # Verify that the rgb images are changing
+        for cid, rgb in zip(args.camera_ids, rgbs):
+            pseudo_hash = np_array_to_hash(rgb)
+            if pseudo_hash == camera_rgb_pseudo_hashes[cid]:
+                pseudo_hash_match_counts[cid] += 1
+            else:
+                pseudo_hash_match_counts[cid] = 0
+            camera_rgb_pseudo_hashes[cid] = pseudo_hash
+            if pseudo_hash_match_counts[cid] == 10:
+                raise RuntimeError(f"Camera {cid} hasn't changed for 10 frames")
+
 
         q_desired = franka_interface.last_q_d
         arm_q = franka_interface.last_q
@@ -321,15 +365,17 @@ if __name__ == "__main__":
         action = inference_node.get_real_action(rgbs, state)
 
         try:
-            if select.select([sys.stdin], [], [], 0.0)[0] == [sys.stdin]:
-                key = sys.stdin.read(1)
-                if key == "\n":
-                    cprint("Resetting", "yellow")
-                    RESETTING = True
-                    reset_joints_to(franka_interface, STARTING_CONFIGS[args.starting_qpos_alias.upper()], gripper_open=True)
-                    inference_node = ACTRealInference(args.checkpoint_path, args)
-                    RESETTING = False
-                    continue
+            if enter_is_pressed():
+                cprint(" --> Resetting", "yellow")
+                RESETTING = True
+                reset_joints_to(franka_interface, STARTING_CONFIGS[args.starting_qpos_alias.upper()], gripper_open=True)
+                cprint("Press ENTER to continue", "yellow")
+                inference_node = ACTRealInference(args.checkpoint_path, args)
+                while not enter_is_pressed():
+                    INFERENCE_RATE.sleep()
+                RESETTING = False
+                cprint("Running policy 🏁", "yellow")
+                continue
 
             INFERENCE_RATE.sleep()
 
