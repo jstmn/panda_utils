@@ -17,6 +17,7 @@ This library contains code to do the following:
 Almost always I recommend using [uv](https://docs.astral.sh/uv/) or [pixi](https://pixi.sh/latest/), but because there's so many libraries that need to be cloned locally and then installed in an editable mode, I recommend just sticking to a simple conda environment. 
 
 ```bash
+sudo apt install libhidapi-hidraw0 libhidapi-libusb0
 echo "DEOXYS_DIR='/PATH/TO/deoxys_control'" >> ~/.bashrc; source ~/.bashrc
 echo "PYTHONPATH='$PYTHONPATH:$DEOXYS_DIR/deoxys/'" >> ~/.bashrc; source ~/.bashrc
 echo "ROS_WS='/PATH/TO/ROS_WS'" >> ~/.bashrc; source ~/.bashrc

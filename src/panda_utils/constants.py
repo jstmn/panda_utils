@@ -4,6 +4,10 @@ from panda_utils.types import PandaLimits, WorkspaceBounds
 from panda_utils.utils import cm_to_m
 
 
+
+SPACE_MOUSE_VENDOR_ID = 1133
+SPACE_MOUSE_PRODUCT_ID = 50726
+
 # Note that when color and depth are combined to create a pointcloud, the dimensions of the narrower of the two sensors
 # will be choosen as the output dimension. This means we should use HD mode for both depth and color. However, note that
 # at 1280 x 720, the depth camera can only record at 6 fps. At 640 x 480, the FOV is still greater than the color
