@@ -16,11 +16,17 @@ python scripts/zed_subscriber.py
 3.
 
 Run command:
+zed explorer
+/usr/local/zed/tools/ZED_Explorer
+
 Terminal 1:
 bash ~/Desktop/ros2_ws/zed_tools/launch_all.sh
 
 if the above command is not working, try manually launching the clean.sh script
 bash ~/Desktop/ros2_ws/zed_tools/clean.sh
+
+after camera restart, restart usb interface
+cd ~/Desktop/ros2_ws/zed_tools && python3 zed_usb_reset.py f582 && python3 zed_usb_reset.py f880 && python3 zed_usb_reset.py f682 && sleep 5 && bash ~/Desktop/ros2_ws/zed_tools/devs.sh
 
 Terminal 2:
 python3 ~/Desktop/panda_utils/scripts/zed_subscriber.py --topic-prefixes zed=/zed_multi/zed zed2i=/zed_multi/zed2i zedm=/zed_multi/zedm

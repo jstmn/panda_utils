@@ -129,6 +129,15 @@ The connected device is `046d:c626` — a **Logitech-branded 3Dconnexion SpaceNa
 The defaults are for a 3Dconnexion-branded SpaceMouse Compact. Either pass
 `--vendor-id 1133 --product-id 50726` or change the defaults before teleoperating.
 
+### (resolved) the rig DOES have a gripper
+
+Earlier notes here and in `log_demonstration2.py` said no gripper was fitted. That is
+wrong as of 2026-09-06: `bin/gripper-interface` runs on the NUC and
+`FrankaInterface.last_gripper_q` reads `0.0804` (Franka Hand, fully open). Record
+demonstrations WITHOUT `--no-gripper`, and convert with `--arm-dof 9` so the two finger
+columns survive into `obs/qpos` -- Jrl2's `panda` actuates 9 joints and pins any the demo
+omits at 0, rendering the gripper shut.
+
 ### ROS1 scripts cannot run here
 
 `panda_teleop.py`, `log_demonstrations.py` and `reset_panda.py` import `rospy`;
