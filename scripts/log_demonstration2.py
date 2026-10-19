@@ -28,22 +28,30 @@ Usage:
     source ~/Desktop/ros2_ws/install/setup.bash
     source ~/anaconda3/bin/activate deoxys
 
+    # This
     python scripts/log_demonstration2.py \
         --output_dir ~/Desktop/data/zed_demos --description raise_cube \
         --recording_rate_hz 15.0 --camera_ids zed zed2i zedm --no-gripper --no-depth
 
-    python scripts/log_demonstration2.py --list-topics    # discover live camera topics
-
-    For the aux-pose (real2sim) pipeline: depth ON, and the D435 as the scene camera, so the
-    frames FoundationPose labels are the frames the policy sees. See scripts/r2st_convert_demo.py.
-
-    ros2 launch realsense2_camera rs_launch.py camera_namespace:=camera camera_name:=d435 \
-        align_depth.enable:=true rgb_camera.color_profile:=640x480x30 \
-        depth_module.depth_profile:=640x480x30
-
+    # Or this
     python scripts/log_demonstration2.py \
-        --output_dir ~/Desktop/data/aux_demos --description lift_peg \
-        --recording_rate_hz 15.0 --camera_ids d435=realsense zedm --no-gripper
+        --output_dir ~/Desktop/data/MPC_oct15 --description LiftPegUpright \
+        --recording_rate_hz 15.0 --camera_ids zed2i zedm
+
+
+    # Discover live camera topics
+    python scripts/log_demonstration2.py --list-topics
+
+For the aux-pose (real2sim) pipeline: depth ON, and the D435 as the scene camera, so the
+frames FoundationPose labels are the frames the policy sees. See scripts/r2st_convert_demo.py.
+
+ros2 launch realsense2_camera rs_launch.py camera_namespace:=camera camera_name:=d435 \
+    align_depth.enable:=true rgb_camera.color_profile:=640x480x30 \
+    depth_module.depth_profile:=640x480x30
+
+python scripts/log_demonstration2.py \
+    --output_dir ~/Desktop/data/aux_demos --description lift_peg \
+    --recording_rate_hz 15.0 --camera_ids d435=realsense zedm --no-gripper
 """
 
 from __future__ import annotations
@@ -85,19 +93,8 @@ except Exception:  # noqa: BLE001 - any import error means the ROS 1 chain is un
 
 CONTROLLER_TYPE = "OSC_POSE"
 
-# Matches log_demonstrations.py. Drawer should be visible by the north camera.
-#RESET_JOINT_POSITIONS = [0.35648074, 0.53879886, 0.16414258, -1.67889499, -1.5206821, 1.5415236, 2.81561697]
+RESET_JOINT_POSITIONS = [0.09162008, -0.19826458, -0.01990020, -2.47322699, -0.01307074, 2.30396583, 0.84809397]
 
-#Not for open-drawer.
-#RESET_JOINT_POSITIONS = [0.09162008, -0.19826458, -0.01990020, -2.47322699, -0.01307074, 2.30396583, 0.84809397]
-
-#cabinet
-#RESET_JOINT_POSITIONS = [0.55254022, 0.80662328, -0.43850005, -1.49100197, -1.17349812, 1.40865538, 2.8047689]
-
-#NEW DRAWER
-RESET_JOINT_POSITIONS = [
-     0.51371466,  0.65246257,  0.05807108, -1.66403646, -1.21145572,  1.17798121,  1.45514356,
-]
 
 
 
