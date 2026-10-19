@@ -27,3 +27,8 @@ logs/
 *checkpoint*
 
 *.gz
+udev/
+
+scripts/mimicgen_aux
+
+run-instructions.txt

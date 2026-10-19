@@ -1,0 +1,41 @@
+# Experimental copy of deoxys' osc-pose-controller.yml, for rm_bc_inference.py --controller-cfg.
+# Kept separate from the deoxys install so a sweep here cannot change what every other script runs.
+#
+# Why it exists: measured on two stackcube rollouts (2026-09-13), the arm barely responds to the
+# small delta goals a 14.4 Hz policy produces. With the translation transfer curve off, the policy
+# commanded +20.3 deg of wrist pitch and the hand turned -0.4 deg -- about 2% of what was asked.
+# With the curve on, translation goals are inflated ~12.5x to force motion, and the orientation
+# then follows those inflated goals rather than the policy's rotation command: achieved wrist pitch
+# correlates +0.75 with the z position offset and +0.01 with the commanded pitch.
+#
+# The two knobs that bear on this are Kp.rotation and traj_interpolator_cfg.time_fraction; the
+# values below are deoxys' defaults, so this file reproduces stock behaviour until something is
+# changed. Sweep from the command line with --kp-rotation / --interp-time-fraction rather than by
+# editing here, so the run log records what was used.
+controller_type: OSC_POSE
+
+is_delta: true
+
+traj_interpolator_cfg:
+  traj_interpolator_type: LINEAR_POSE
+  # Fraction of the 70 ms control step spent interpolating toward the goal. 0.3 means the arm
+  # aims for 30% of the commanded offset before the next goal replaces it.
+  time_fraction: 0.3
+
+Kp:
+  translation: 150.0
+  rotation: 250.0
+
+action_scale:
+  translation: 0.05
+  rotation: 1.0
+
+residual_mass_vec: [0.0, 0.0, 0.0, 0.0, 0.1, 0.5, 0.5]
+
+state_estimator_cfg:
+  is_estimation: false
+  state_estimator_type: EXPONENTIAL_SMOOTHING
+  alpha_q: 0.9
+  alpha_dq: 0.9
+  alpha_eef: 1.0
+  alpha_eef_vel: 1.0

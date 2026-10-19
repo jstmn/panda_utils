@@ -20,6 +20,7 @@ import threading
 from termcolor import cprint
 
 
+from panda_utils.constants import SPACE_MOUSE_VENDOR_ID, SPACE_MOUSE_PRODUCT_ID
 from panda_utils.deoxys_controller import RESET_JOINT_POSITIONS
 from panda_utils.utils import wait_for_deoxys_ready, to_public_dict, save_combined_rgbs
 
@@ -387,8 +388,8 @@ def main():
         default=None,
         help="Path to robot interface config (default: configs/charmander.yml)",
     )
-    parser.add_argument("--vendor-id", type=int, default=9583)
-    parser.add_argument("--product-id", type=int, default=50741)
+    parser.add_argument("--vendor-id", type=int, default=SPACE_MOUSE_VENDOR_ID)
+    parser.add_argument("--product-id", type=int, default=SPACE_MOUSE_PRODUCT_ID)
     parser.add_argument("--no-teleop", action="store_true", help="Disable teleop (for kinesthetic teaching)")
     parser.add_argument("--reset_joints", type=str, default="true", help="Reset joints to initial position")
     parser.add_argument("--run_teleop", type=str, default="true")
