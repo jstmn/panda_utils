@@ -131,7 +131,7 @@ The defaults are for a 3Dconnexion-branded SpaceMouse Compact. Either pass
 
 ### (resolved) the rig DOES have a gripper
 
-Earlier notes here and in `log_demonstration2.py` said no gripper was fitted. That is
+Earlier notes here and in `log_demonstration.py` said no gripper was fitted. That is
 wrong as of 2026-09-06: `bin/gripper-interface` runs on the NUC and
 `FrankaInterface.last_gripper_q` reads `0.0804` (Franka Hand, fully open). Record
 demonstrations WITHOUT `--no-gripper`, and convert with `--arm-dof 9` so the two finger
@@ -140,14 +140,13 @@ omits at 0, rendering the gripper shut.
 
 ### ROS1 scripts cannot run here
 
-`panda_teleop.py`, `log_demonstrations.py` and `reset_panda.py` import `rospy`;
-`panda_utils.utils` and `panda_utils.deoxys_controller` do too (plus
-`tf.transformations`, `jrl2`, `open3d`). **Only ROS2 Humble is installed** — there is no
-`/opt/ros/noetic`.
+`reset_panda.py` imports `rospy`; `panda_utils.utils` and
+`panda_utils.deoxys_controller` do too (plus `tf.transformations`, `jrl2`, `open3d`).
+**Only ROS2 Humble is installed** — there is no `/opt/ros/noetic`.
 
-`scripts/franka_manipulation.py` is deliberately ROS-free so it runs today. Porting the
-teleop + logging scripts to ROS2 (`rclpy`) is the next step for the data collection
-pipeline; `src/panda_utils/rgb_subscriber_ros2_zed.py` is already ROS2 and shows the pattern.
+`scripts/log_demonstration.py` and `scripts/panda_teleop.py` are ROS 2.
+`scripts/franka_manipulation.py` is deliberately ROS-free so it runs today.
+`src/panda_utils/rgb_subscriber_ros2_zed.py` is ROS 2 as well.
 
 ## What was changed to get this working
 

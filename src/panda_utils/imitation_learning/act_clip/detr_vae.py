@@ -5,11 +5,11 @@ DETR model and criterion classes.
 import torch
 from torch import nn
 from torch.autograd import Variable
-from act_clip.transformer import build_transformer, TransformerEncoder, TransformerEncoderLayer
+from panda_utils.imitation_learning.act_clip.transformer import build_transformer, TransformerEncoder, TransformerEncoderLayer
 import numpy as np
 import IPython
 e = IPython.embed
-from act_clip.clip import clip, model
+from panda_utils.imitation_learning.act_clip.clip import clip, model
 
 def reparametrize(mu, logvar):
     std = logvar.div(2).exp()

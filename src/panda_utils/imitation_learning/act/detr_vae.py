@@ -5,7 +5,7 @@ DETR model and criterion classes.
 import torch
 from torch import nn
 from torch.autograd import Variable
-from act.transformer import TransformerEncoder, TransformerEncoderLayer
+from panda_utils.imitation_learning.act.transformer import TransformerEncoder, TransformerEncoderLayer
 
 import numpy as np
 

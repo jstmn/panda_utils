@@ -1,9 +1,9 @@
 """Teleoperated demonstration logging with ZED cameras (ROS 2).
 
-ZED port of scripts/log_demonstrations.py. Same UI, same HDF5 layout, same SpaceMouse
-teleop - only the camera source and ROS version differ.
+Same UI, same HDF5 layout, same SpaceMouse teleop as the old ROS 1 logger.
+Camera source is ZED.
 
-What changed vs log_demonstrations.py:
+What changed vs the ROS 1 logger:
   * ROS 1 (rospy) -> ROS 2 (rclpy). Only Humble is installed on this machine.
   * RealSense topics -> ZED topics, matching zed_tools/launch_all.sh, which launches with
     `namespace:=zed_multi camera_name:=<name>`, giving /zed_multi/<cam>/...
@@ -29,27 +29,27 @@ Usage:
     source ~/anaconda3/bin/activate deoxys
 
     # This
-    python scripts/log_demonstration2.py \
+    python scripts/log_demonstration.py \
         --output_dir ~/Desktop/data/zed_demos --description raise_cube \
         --recording_rate_hz 15.0 --camera_ids zed zed2i zedm --no-gripper --no-depth
 
     # Or this
-    python scripts/log_demonstration2.py \
+    python scripts/log_demonstration.py \
         --output_dir ~/Desktop/data/MPC_oct15 --description LiftPegUpright \
         --recording_rate_hz 15.0 --camera_ids zed2i zedm
 
 
     # Discover live camera topics
-    python scripts/log_demonstration2.py --list-topics
+    python scripts/log_demonstration.py --list-topics
 
 For the aux-pose (real2sim) pipeline: depth ON, and the D435 as the scene camera, so the
-frames FoundationPose labels are the frames the policy sees. See scripts/r2st_convert_demo.py.
+frames FoundationPose labels are the frames the policy sees. See scripts/r2st/r2st_convert_demo.py.
 
 ros2 launch realsense2_camera rs_launch.py camera_namespace:=camera camera_name:=d435 \
     align_depth.enable:=true rgb_camera.color_profile:=640x480x30 \
     depth_module.depth_profile:=640x480x30
 
-python scripts/log_demonstration2.py \
+python scripts/log_demonstration.py \
     --output_dir ~/Desktop/data/aux_demos --description lift_peg \
     --recording_rate_hz 15.0 --camera_ids d435=realsense zedm --no-gripper
 """
@@ -241,7 +241,7 @@ class ZedDataCollector(Node):
                  has_gripper: bool, best_effort: bool, record_depth: bool = True,
                  camera_layouts: dict[str, str] | None = None,
                  no_depth_cameras: set[str] | None = None):
-        super().__init__("log_demonstration2")
+        super().__init__("log_demonstration")
         for cam_id in camera_ids:
             assert "_" not in cam_id, f"Camera id cannot contain underscore: {cam_id}"
 
@@ -350,7 +350,7 @@ class ZedDataCollector(Node):
         missing = [c for c in self._camera_ids if not self._camera_ready(c)]
         cprint(f"❌ No frames from: {missing} after {timeout_s:.0f}s", "red")
         cprint("   Check the cameras are up:  bash ~/Desktop/ros2_ws/zed_tools/verify.sh", "red")
-        cprint("   Check topic names:         python scripts/log_demonstration2.py --list-topics", "red")
+        cprint("   Check topic names:         python scripts/log_demonstration.py --list-topics", "red")
         cprint("   If topics exist but no data arrives, retry with --qos-best-effort", "red")
         return False
 
@@ -377,7 +377,7 @@ class ZedDataCollector(Node):
             return [], False
 
         # Read joints straight off the deoxys interface rather than round-tripping through
-        # ROS as log_demonstrations.py did - fewer moving parts and no publisher/subscriber race.
+        # ROS as the ROS 1 logger did - fewer moving parts and no publisher/subscriber race.
         arm_q = self._robot.last_q
         if arm_q is None:
             return [], False
@@ -553,7 +553,7 @@ def teleop_control_thread_target(robot: FrankaInterface, device: SpaceMouse,
 def list_topics() -> int:
     """Print live camera-ish topics so topic-name mismatches are obvious."""
     rclpy.init(args=None)
-    node = rclpy.create_node("log_demonstration2_topic_lister")
+    node = rclpy.create_node("log_demonstration_topic_lister")
     time.sleep(2.0)  # discovery needs a moment
     names = sorted(n for n, _ in node.get_topic_names_and_types())
     cam = [n for n in names if any(k in n.lower() for k in ("zed", "image", "depth", "camera_info"))]

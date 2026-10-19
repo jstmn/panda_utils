@@ -46,14 +46,14 @@ THE MATH
 USAGE
     # 1. board pose in the camera, from the live D435 topic (camera must NOT move after this)
     source /opt/ros/humble/setup.bash && source ~/anaconda3/bin/activate deoxys
-    python scripts/r2st_handeye.py detect --out ~/Desktop/data/handeye
+    python scripts/r2st/r2st_handeye.py detect --out ~/Desktop/data/handeye
 
     # 2. touch corners.  Franka in guiding mode; Enter records, 'q' finishes.
-    python scripts/r2st_handeye.py touch --out ~/Desktop/data/handeye
+    python scripts/r2st/r2st_handeye.py touch --out ~/Desktop/data/handeye
 
     # 3. solve (needs Jrl2 -> r2st env)
     source ~/anaconda3/bin/activate r2st
-    python scripts/r2st_handeye.py solve --out ~/Desktop/data/handeye \
+    python scripts/r2st/r2st_handeye.py solve --out ~/Desktop/data/handeye \
         --extrinsics-out ~/Desktop/data/r2st/square_smoke/extrinsics_cam_1.yaml
 
     The YAML `solve` writes is exactly the schema track_object.py's --extrinsics-path
@@ -232,7 +232,7 @@ def cmd_touch(args: argparse.Namespace) -> int:
     state, or in execution mode, where deoxys holds the FCI and pressing the guiding
     buttons conflicts with the external controller -- the status light goes pink and the
     arm stops. So we keep the FCI and jog with the SpaceMouse instead, exactly as
-    log_demonstration2.py does.
+    log_demonstration.py does.
     """
     import select
     import sys

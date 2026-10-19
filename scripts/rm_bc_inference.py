@@ -1,12 +1,12 @@
 """robomimic BC-Transformer-GMM policy inference on the real Franka (ROS 2).
 
-Structural port of scripts/act_clip_inference2.py -- same Rate helper, same camera
+Structural port of scripts/act_clip_inference.py -- same Rate helper, same camera
 subscriber shape, same "inference loop fills action_holder, control thread consumes it"
 split, same camera-staleness guard, same ENTER-to-reset, same teardown that refuses to
 call a rollout clean if the control thread died. Only the policy and the controller
 differ.
 
-WHAT CHANGED vs act_clip_inference2.py
+WHAT CHANGED vs act_clip_inference.py
   * Policy: ACT-CLIP -> a robomimic checkpoint (`LeeHakHo/square_real30_ckpt`), loaded
     with `policy_from_checkpoint`. It is a BC_Transformer_GMM, so it needs a CONTEXT
     WINDOW, not a single frame: obs tensors are (1, context_length, ...) and the window
@@ -20,7 +20,7 @@ WHAT CHANGED vs act_clip_inference2.py
   * Cameras: two, with DIFFERENT topic layouts -- the D435 publishes
     /camera/d435/color/image_raw while the ZED Mini publishes
     /zed_multi/zedm/rgb/image_rect_color -- so the single COLOR_SUFFIX of the ACT script
-    becomes the per-camera LAYOUTS table that log_demonstration2.py already uses.
+    becomes the per-camera LAYOUTS table that log_demonstration.py already uses.
 
 TWO UNIT CONVERSIONS THAT MUST BE RIGHT
   1. The policy emits NORMALISED actions. `RolloutPolicy.__call__` would undo that, but it
@@ -92,7 +92,7 @@ from deoxys.utils.config_utils import get_default_controller_config
 
 np.set_printoptions(precision=4, suppress=True, linewidth=200)
 
-# panda_utils.deoxys_controller.RESET_JOINT_POSITIONS, as act_clip_inference2.py inlines it
+# panda_utils.deoxys_controller.RESET_JOINT_POSITIONS, as act_clip_inference.py inlines it
 # RESET_JOINT_POSITIONS = [
 #     #0.09162008, -0.19826458, -0.01990020, -2.47322699, -0.01307074, 2.30396583, 0.84809397,
 #     0.55254022, 0.80662328, -0.43850005, -1.49100197, -1.17349812, 1.40865538, 2.8047689,
@@ -127,7 +127,7 @@ HF_REPO = "LeeHakHo/square_real100_bs128_ckpt"  # diffusion, 100 real demos, bat
 # GMM set is square_real30_ckpt; the 60-demo repo is square_real60_r30val_ckpt.
 
 # Which ROS topic each camera publishes colour on. The D435 and the ZED wrapper disagree,
-# so this mirrors log_demonstration2.LAYOUTS rather than assuming one suffix for both.
+# so this mirrors log_demonstration.LAYOUTS rather than assuming one suffix for both.
 CameraLayout = namedtuple("CameraLayout", "template color")
 LAYOUTS = {
     "realsense": CameraLayout(template="/camera/{cam}", color="color/image_raw"),
@@ -144,7 +144,7 @@ LOW_DIM_KEYS = ["robot0_eef_pos", "robot0_eef_quat", "robot0_gripper_qpos"]
 
 
 class Rate:
-    """rospy.Rate replacement -- see act_clip_inference2.Rate for why not rclpy.Rate."""
+    """rospy.Rate replacement -- see act_clip_inference.Rate for why not rclpy.Rate."""
 
     def __init__(self, hz: float):
         self._period = 1.0 / float(hz)
@@ -167,7 +167,7 @@ def make_qos(best_effort: bool) -> QoSProfile:
 
 
 def decode_color(msg: Image) -> np.ndarray:
-    """Colour Image -> HxWx3 uint8 RGB, matching log_demonstration2.decode_color."""
+    """Colour Image -> HxWx3 uint8 RGB, matching log_demonstration.decode_color."""
     buf = np.frombuffer(msg.data, dtype=np.uint8)
     if msg.encoding in ("bgra8", "rgba8"):
         img = buf.reshape(msg.height, msg.width, 4)
@@ -215,7 +215,7 @@ _TRANSFER_ACHIEVED_MM = [0.0, 0.02, 0.78, 4.01, 9.35]
 _TRANSFER_OFFSET_MM = [0.0, 5.0, 10.0, 20.0, 40.0]
 
 
-# Rotation's version of the translation table below, measured with scripts/r2st_rot_transfer.py on
+# Rotation's version of the translation table below, measured with scripts/r2st/r2st_rot_transfer.py on
 # 2026-09-13 from the reset pose at 14.4 Hz with deoxys' stock gains (Kp 150/250, LINEAR_POSE
 # time_fraction 0.3), 8 amplitudes x 3 repeats per axis. Achieved rad/step, hand frame:
 #
@@ -324,7 +324,7 @@ def achieved_to_offset(d_m: np.ndarray, cap_m: float) -> np.ndarray:
 
 
 class RGBSubscriber(Node):
-    """latest_rgb(cam_id) -> most recent frame or None, as in act_clip_inference2."""
+    """latest_rgb(cam_id) -> most recent frame or None, as in act_clip_inference."""
 
     def __init__(self, camera_ids: list[str], best_effort: bool):
         super().__init__("rm_bc_inference_cameras")
@@ -539,7 +539,7 @@ def main() -> int:
     p.add_argument("--control-rate", type=float, default=None,
                    help="how often the CONTROLLER is handed the current action, Hz. Default: same as "
                         "--rate, i.e. one OSC command per policy step. The demonstrations were driven at "
-                        "TELEOP_HZ = 50 Hz (log_demonstration2.py), so each recorded 14.4 Hz frame carried "
+                        "TELEOP_HZ = 50 Hz (log_demonstration.py), so each recorded 14.4 Hz frame carried "
                         "~3.5 commands; is_delta recomputes the goal from the CURRENT pose on every send, "
                         "so --control-rate 50 reproduces that drive without touching the policy rate. The "
                         "arm pushes harder this way -- --max-offset and the workspace box still apply")
@@ -763,7 +763,7 @@ def main() -> int:
     control_failed = [False]
     # One Rate per thread. A shared Rate is not thread-safe in the way that matters here:
     # both callers advance the same `_next`, so each loop wakes at half the requested rate
-    # and the arm crawls at half speed. act_clip_inference2.py keeps CONTROL_RATE and
+    # and the arm crawls at half speed. act_clip_inference.py keeps CONTROL_RATE and
     # INFERENCE_RATE separate for exactly this reason.
     CONTROL_RATE = Rate(cli.control_rate or cli.rate)
     INFERENCE_RATE = Rate(cli.rate)

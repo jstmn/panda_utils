@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Real-time frozen-camera detector for log_demonstration2.py.
+"""Real-time frozen-camera detector for log_demonstration.py.
 
 WHY TWO MODES
 -------------
-log_demonstration2.py does NOT write images during recording. It accumulates every
+log_demonstration.py does NOT write images during recording. It accumulates every
 frame in RAM (ZedDataCollector.camera_data[cam]["color_images"]) and only flushes to
 disk in save(), which runs *after* you press ENTER to stop the demo. So the images/
 folder is a post-hoc artefact, not a live stream -- polling it can never tell you a
@@ -46,7 +46,7 @@ USAGE
     python ~/Desktop/panda_utils/scripts/chk_camera_crash.py
 
 Start it in its own terminal any time -- before or after the logger. It idles until it
-sees log_demonstration2.py in the process table, auto-discovers that run's
+sees log_demonstration.py in the process table, auto-discovers that run's
 --camera_ids / --output_dir / --topic-template from /proc/<pid>/cmdline, monitors, and
 goes back to idling when the logger exits. It never exits on its own so it survives
 across logger restarts; Ctrl-C to stop it.
@@ -133,10 +133,10 @@ THUMB_W, THUMB_H = 64, 36
 CONTENT_SAMPLE_INTERVAL_S = 0.5
 
 # ---------------------------------------------------------------------------
-# Constants mirrored from log_demonstration2.py -- keep in sync
+# Constants mirrored from log_demonstration.py -- keep in sync
 # ---------------------------------------------------------------------------
 
-LOGGER_SCRIPT = "log_demonstration2.py"
+LOGGER_SCRIPT = "log_demonstration.py"
 DEFAULT_TOPIC_TEMPLATE = "/zed_multi/{cam}"
 COLOR_SUFFIX = "rgb/image_rect_color"
 DEFAULT_DATA_ROOT = Path.home() / "Desktop" / "data"
@@ -210,7 +210,7 @@ def show_popup(title: str, body: str) -> int:
 # ===========================================================================
 
 def find_logger_process() -> tuple[int, list[str]] | None:
-    """Return (pid, argv) of a running log_demonstration2.py, or None.
+    """Return (pid, argv) of a running log_demonstration.py, or None.
 
     Scans /proc directly rather than shelling out to pgrep so the argv comes back
     already split -- we need it to recover --camera_ids and --output_dir.
@@ -241,7 +241,7 @@ def find_logger_process() -> tuple[int, list[str]] | None:
 def parse_logger_args(argv: list[str]) -> dict:
     """Recover the settings that matter from the logger's own command line.
 
-    Mirrors log_demonstration2.py's argparse for the three flags we care about:
+    Mirrors log_demonstration.py's argparse for the three flags we care about:
     --camera_ids (nargs='*', also defines montage panel order), --output_dir,
     --topic-template.
     """
@@ -571,7 +571,7 @@ def split_montage(path: Path, n_panels: int) -> list[np.ndarray] | None:
 def monitor_files(camera_ids: list[str], data_root: Path, logger_pid: int) -> str:
     """Watch the newest demo's images/ folder. Post-hoc: fires only after a save.
 
-    Note the timing reality this cannot escape: log_demonstration2.py writes the whole
+    Note the timing reality this cannot escape: log_demonstration.py writes the whole
     images/ folder in one burst inside save(), so a 'freeze' here is always reported
     after the affected demo has already been recorded.
     """
@@ -680,7 +680,7 @@ def main() -> int:
         return 1
 
     print("=" * 70)
-    print("🧊 Camera freeze detector for log_demonstration2.py")
+    print("🧊 Camera freeze detector for log_demonstration.py")
     print("=" * 70)
     print(f"mode          : {args.mode}"
           f"{'' if have_ros else '   (rclpy unavailable -> files)'}")

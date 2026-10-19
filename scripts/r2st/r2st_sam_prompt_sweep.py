@@ -30,13 +30,13 @@ WHAT IT REPORTS, PER PROMPT
 USAGE
     source ~/anaconda3/bin/activate r2st
 
-    python scripts/r2st_sam_prompt_sweep.py \
+    python scripts/r2st/r2st_sam_prompt_sweep.py \
         --h5 ~/Desktop/data/can_smoke/can__09-10_.../traj_0.h5 \
         --prompt "red can" --prompt "coke can" --prompt "red cylinder object" \
         --prompt "green cube" --prompt "green block" --prompt "green object"
 
     # save a masked cut-out per prompt to eyeball which object each one grabbed
-    python scripts/r2st_sam_prompt_sweep.py --h5 ... --prompt "red can" --save-dir /tmp/sweep
+    python scripts/r2st/r2st_sam_prompt_sweep.py --h5 ... --prompt "red can" --save-dir /tmp/sweep
 """
 
 from __future__ import annotations

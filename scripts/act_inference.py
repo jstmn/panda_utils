@@ -7,10 +7,9 @@ import numpy as np
 import torchvision.transforms as T
 from std_msgs.msg import Float64MultiArray
 from time import sleep, time
-from scripts.act.detr_vae import DETRVAE
-from act.backbone import build_backbone
-from act.transformer import build_transformer
-from act.detr_vae import build_encoder
+from panda_utils.imitation_learning.act.detr_vae import DETRVAE, build_encoder
+from panda_utils.imitation_learning.act.backbone import build_backbone
+from panda_utils.imitation_learning.act.transformer import build_transformer
 from deoxys.utils.yaml_config import YamlConfig
 import cv2
 
@@ -58,7 +57,7 @@ class Args:
 
     # checkpoint_path: str = "scripts/checkpoints/act_stackcube/100000.pt"
     checkpoint_path: str = "scripts/checkpoints/act_raisecube/200000.pt"
-    #checkpoint_path: str = "scripts/act/checkpoint/act-RotateArrow-v1--real/checkpoints/100000.pt"
+    #checkpoint_path: str = "src/panda_utils/imitation_learning/act/checkpoint/act-RotateArrow-v1--real/checkpoints/100000.pt"
     camera_id: str = "base"
     starting_qpos_alias: str = "default"
 
@@ -305,7 +304,7 @@ if __name__ == "__main__":
             gripper_pos = float(last_gripper_q) / 2.0
             last_q = np.concatenate([arm_q, [gripper_pos, gripper_pos]])
             last_dq = np.concatenate([arm_dq, [0.0, 0.0]]) 
-            # ^ NOTE: Gripper velocity is set to [0, 0] by log_demonstrations.py
+            # ^ NOTE: Gripper velocity is set to [0, 0] by log_demonstration.py
             state = np.concatenate([last_q, last_dq]).astype(np.float32)
             action = inference_node.get_real_action(rgb, state)
 

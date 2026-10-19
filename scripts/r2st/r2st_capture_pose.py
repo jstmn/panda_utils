@@ -2,7 +2,7 @@
 """Drive the arm with the SpaceMouse and capture joint configurations to paste into a script.
 
 RESET_JOINT_POSITIONS is inlined in half a dozen scripts here -- rm_bc_inference.py,
-log_demonstration2.py, act_clip_inference2.py, franka_manipulation.py -- and every one of them
+log_demonstration.py, act_clip_inference.py, franka_manipulation.py -- and every one of them
 carries a different hand-tuned list with older ones commented out above it. This is the tool that
 produces those numbers: teleop to a pose you like, press ENTER, and it prints the joint vector
 formatted the way those files already write it, along with where the end effector ended up.
@@ -15,13 +15,13 @@ Usage:
     source ~/anaconda3/bin/activate rmimic
     cd ~/Desktop/panda_utils
 
-    python scripts/r2st_capture_pose.py
+    python scripts/r2st/r2st_capture_pose.py
 
     # capture without teleop -- for hand-guiding the arm by its own free-drive button
-    python scripts/r2st_capture_pose.py --no-teleop
+    python scripts/r2st/r2st_capture_pose.py --no-teleop
 
     # keep every capture
-    python scripts/r2st_capture_pose.py --out ~/Desktop/data/reset_poses.txt
+    python scripts/r2st/r2st_capture_pose.py --out ~/Desktop/data/reset_poses.txt
 
 ENTER captures, 'r' returns to the pose the script started from, Ctrl-C exits and reprints
 everything captured.
@@ -175,7 +175,7 @@ def main() -> int:
         if cli.out:
             cprint(f"\nappended to {cli.out}", "green")
         cprint("\nPaste one into the script that needs it -- rm_bc_inference.py:96 for inference, "
-               "log_demonstration2.py:89 for recording. They do not share a copy.", "white")
+               "log_demonstration.py:89 for recording. They do not share a copy.", "white")
     else:
         cprint("nothing captured", "yellow")
     return 0

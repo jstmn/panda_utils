@@ -38,11 +38,11 @@ USAGE
     source ~/anaconda3/bin/activate r2st
 
     # both meshes, straight into the asset dirs track_object.py will look in
-    python scripts/r2st_make_nut_meshes.py \
+    python scripts/r2st/r2st_make_nut_meshes.py \
         --outdir ~/Desktop/real2sim-toolkit/data/meshyai --camera cam_1
 
     # with real measurements (metres)
-    python scripts/r2st_make_nut_meshes.py \
+    python scripts/r2st/r2st_make_nut_meshes.py \
         --outdir ~/Desktop/real2sim-toolkit/data/meshyai --camera cam_1 \
         --nut-outer 0.058 --nut-hole 0.038 --nut-thickness 0.012 \
         --handle-length 0.048 --handle-width 0.018

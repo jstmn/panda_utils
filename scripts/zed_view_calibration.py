@@ -2,7 +2,7 @@
 """Check the live ZED views against the views the ACT-CLIP policy was trained on.
 
 WHY THIS EXISTS
-    act_clip_inference2.py runs an end-to-end pixels->actions policy. Nothing in it
+    act_clip_inference.py runs an end-to-end pixels->actions policy. Nothing in it
     verifies that the cameras are still pointing where they pointed during data
     collection. A camera that got nudged between 2026-07-29 (recording) and today does
     not raise an error - it silently shifts the whole input distribution and the policy
@@ -89,7 +89,7 @@ import numpy as np
 from termcolor import cprint
 
 # --------------------------------------------------------------------------------------
-# Conventions shared with act_clip_inference2.py / log_demonstration2.py
+# Conventions shared with act_clip_inference.py / log_demonstration.py
 # --------------------------------------------------------------------------------------
 
 DEFAULT_TOPIC_TEMPLATE = "/zed_multi/{cam}"
@@ -338,7 +338,7 @@ def nearest_pose_frame(h5path: Path, q_now: np.ndarray) -> tuple[int, float]:
 # --------------------------------------------------------------------------------------
 
 def decode_color(msg) -> np.ndarray:
-    """ZED colour Image -> HxWx3 uint8 RGB. Same convention as log_demonstration2."""
+    """ZED colour Image -> HxWx3 uint8 RGB. Same convention as log_demonstration."""
     buf = np.frombuffer(msg.data, dtype=np.uint8)
     if msg.encoding in ("bgra8", "rgba8"):
         img = buf.reshape(msg.height, msg.width, 4)
@@ -353,7 +353,7 @@ def decode_color(msg) -> np.ndarray:
 
 
 class LiveCameras:
-    """Minimal rclpy subscriber over the same topics act_clip_inference2.py uses."""
+    """Minimal rclpy subscriber over the same topics act_clip_inference.py uses."""
 
     def __init__(self, cameras, topic_template, best_effort):
         import rclpy

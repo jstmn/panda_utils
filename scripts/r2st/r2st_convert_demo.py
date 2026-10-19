@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Convert `log_demonstration2.py` trajectories into the merged sensor-data HDF5 that
+"""Convert `log_demonstration.py` trajectories into the merged sensor-data HDF5 that
 real2sim-toolkit (`examples/track_object.py`, `examples/estimate_camera_extrinsics.py`) reads.
 
 WHY THIS EXISTS
     The two repos disagree on layout, not on content:
 
-        log_demonstration2.py  ->  traj_0.h5
+        log_demonstration.py  ->  traj_0.h5
                                      joint_states_q            (T, 9)   float64
                                      joint_states_dq           (T, 9)   float64
                                      <cam>__color_image        (T,H,W,3) uint8   RGB
@@ -20,7 +20,7 @@ WHY THIS EXISTS
                                      obs/sensor_data/<cam>/rgb_timestamp_ms (T,)
 
     Both store colour as RGB and depth as uint16 millimetres registered to the colour grid
-    (log_demonstration2.decode_depth converts ZED's 32FC1 metres for exactly this reason), so
+    (log_demonstration.decode_depth converts ZED's 32FC1 metres for exactly this reason), so
     this is a regroup and rename, not a conversion. Timestamps are not recorded by the logger;
     they are synthesised from --rate-hz, which is sound because both toolkit scripts index
     RGB-D and qpos by frame, and only the schema check reads the timestamps.
@@ -50,11 +50,11 @@ USAGE
     source ~/anaconda3/bin/activate act
 
     # 1. print the constants.py entry to paste into real2sim-toolkit
-    python scripts/r2st_convert_demo.py --demo-dir ~/Desktop/data/hyeonhoo/lift_peg_0729 \
+    python scripts/r2st/r2st_convert_demo.py --demo-dir ~/Desktop/data/hyeonhoo/lift_peg_0729 \
         --camera zed2i --emit-intrinsics
 
     # 2. convert every traj_*.h5 in the directory
-    python scripts/r2st_convert_demo.py --demo-dir ~/Desktop/data/hyeonhoo/lift_peg_0729 \
+    python scripts/r2st/r2st_convert_demo.py --demo-dir ~/Desktop/data/hyeonhoo/lift_peg_0729 \
         --camera zed2i --out-camera cam_1 --rate-hz 15 \
         --outdir ~/Desktop/data/r2st/lift_peg_0729
 """
@@ -169,7 +169,7 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--demo-dir", type=Path, required=True,
-                   help="Directory of traj_*.h5 written by log_demonstration2.py")
+                   help="Directory of traj_*.h5 written by log_demonstration.py")
     p.add_argument("--camera", required=True,
                    help="Camera id as recorded, e.g. zed2i / zed / zedm / d435")
     p.add_argument("--out-camera", default="cam_1",

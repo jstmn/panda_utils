@@ -24,8 +24,8 @@ echo "ROS_WS='/PATH/TO/ROS_WS'" >> ~/.bashrc; source ~/.bashrc
 echo "PANDA_UTILS_DIR='/PATH/TO/panda_utils'" >> ~/.bashrc; source ~/.bashrc
 
 # Create and activate a conda environment called `panda`:
-conda create -n hardware_env python=3.10 -y
-conda activate hardware_env
+conda create -n panda_utils python=3.10 -y
+conda activate panda_utils
 pip install matplotlib numpy open3d opencv-python termcolor h5py matplotlib rospkg ruff black
 git clone https://github.com/jstmn/Jrl2 thirdparty/Jrl2
 git clone https://github.com/jstmn/Jrl thirdparty/Jrl
@@ -46,25 +46,16 @@ pip install -e .
 ``` bash
 
 # in every new terminal:
-source /opt/ros/noetic/setup.bash; source ${ROS_WS}/devel/setup.bash; conda activate hardware_env; cd ${PANDA_UTILS_DIR}
+conda activate panda_utils; source /opt/ros/humble/setup.bash; source ~/Desktop/ros2_ws/install/setup.bash
 
-# Terminal 1:
-roscore
+# Terminal 1 - ZED cameras
+CAMS="zed2i zedm" bash ~/Desktop/ros2_ws/zed_tools/launch_all.sh
 
-# Terminal 2 - Realsense
-roslaunch franka_realsense_extrinsics main.launch \
-    json_file_path:=${ROS_WS}/src/franka_realsense_extrinsics/config/realsense_config.json \
-    clip_distance:=1.4 filters:="spatial,temporal" \
-    depth_width:=640 depth_height:=480 depth_fps:=15 \
-    color_width:=640 color_height:=480 color_fps:=15
+# Terminal 2 - Teleoperation + log demonstrations [Option 1]
+python scripts/log_demonstration.py \
+  --output_dir ~/Desktop/data/<OUTPUT_DIR> --description <DESCRIPTION> \
+  --recording_rate_hz 20.0 --camera_ids zed2i zedm
 
-# Terminal 3 - Teleoperation + log demonstrations [Option 1]
-python scripts/log_demonstrations.py \
-  --output_dir ~/Desktop/data/hyeonho_feb17_all_cameras --description raise_cube \
-  --recording_rate_hz 15.0 --camera_ids base south north eih
-
-  #--recording_rate_hz 15.0 --camera_ids base south north eih
-
-# Terminal 3 - Teleoperation [Option 2]
+# Terminal 2 - Teleoperation [Option 2]
 python scripts/panda_teleop.py
 ```

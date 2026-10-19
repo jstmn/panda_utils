@@ -26,7 +26,7 @@ KEYS
 
 USAGE
     source /opt/ros/humble/setup.bash && source ~/anaconda3/bin/activate deoxys
-    python scripts/r2st_camera_drift.py \
+    python scripts/r2st/r2st_camera_drift.py \
         --h5 ~/Desktop/data/square60/square__09-07_01-01-34/traj_0.h5
 """
 

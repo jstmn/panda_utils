@@ -36,9 +36,9 @@ MORE THAN ONE TRACKED OBJECT
     data and may differ per demo.
 
 ACTIONS ARE RECONSTRUCTED, NOT RECORDED
-    Neither `log_demonstrations.py` (ROS 1) nor `log_demonstration2.py` (ROS 2) ever saved
-    the teleop action: both build one with `input2action`, hand it to `robot.control`, and
-    drop it. Their `create_dataset` calls only cover joint states and images.
+    `log_demonstration.py` never saved the teleop action: it builds one with
+    `input2action`, hands it to `robot.control`, and drops it. Its `create_dataset`
+    calls only cover joint states and images.
 
     So actions here are derived from what the arm actually did:
         dpos      = eef_pos[t+1] - eef_pos[t]                    (robot base frame)
@@ -59,14 +59,14 @@ CONVENTIONS
 USAGE
     source ~/anaconda3/bin/activate r2st        # needs Jrl2 for FK
 
-    python scripts/r2st_to_robomimic.py \
+    python scripts/r2st/r2st_to_robomimic.py \
         --session ~/Desktop/data/square60 \
         --poses-root ~/Desktop/data/r2st/square60 \
         --object-slug black_square_object \
         --out ~/Desktop/data/robomimic/square_real30/demo.hdf5
 
     # two tracked objects: repeat --object-slug, block 0 first
-    python scripts/r2st_to_robomimic.py \
+    python scripts/r2st/r2st_to_robomimic.py \
         --session ~/Desktop/data/pickplace_test/pick_and_place__09-10_00-02-56 \
         --poses-root ~/Desktop/data/r2st/pickplace_s1 \
         --object-slug red_cylinder_object --object-slug green_cube \
@@ -74,7 +74,7 @@ USAGE
 
     # several recording sessions in one dataset: repeat the pair, in order. Demos are
     # concatenated and renumbered demo_0.., and each carries source_session/source_traj.
-    python scripts/r2st_to_robomimic.py \
+    python scripts/r2st/r2st_to_robomimic.py \
         --session ~/Desktop/data/square60/square__09-07_21-21-37 \
         --poses-root ~/Desktop/data/r2st/square60_v2 \
         --session ~/Desktop/data/square60/square__09-09_21-56-16 \
@@ -82,7 +82,7 @@ USAGE
         --out ~/Desktop/data/robomimic/square_real100/demo.hdf5
 
     # sanity-check one demo without writing anything
-    python scripts/r2st_to_robomimic.py ... --limit 1 --dry-run
+    python scripts/r2st/r2st_to_robomimic.py ... --limit 1 --dry-run
 """
 
 from __future__ import annotations

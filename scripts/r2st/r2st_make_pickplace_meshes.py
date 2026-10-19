@@ -47,12 +47,12 @@ NEITHER OBJECT'S YAW IS SUPERVISED ON THIS TASK
 USAGE
     source ~/anaconda3/bin/activate r2st
 
-    python scripts/r2st_make_pickplace_meshes.py \
+    python scripts/r2st/r2st_make_pickplace_meshes.py \
         --outdir ~/Desktop/data/r2st/can_smoke/0/assets --camera cam_1 \
         --can-slug red_can --cube-slug green_cube
 
     # with real measurements (metres)
-    python scripts/r2st_make_pickplace_meshes.py --outdir ... --camera cam_1 \
+    python scripts/r2st/r2st_make_pickplace_meshes.py --outdir ... --camera cam_1 \
         --diameter 0.0663 --height 0.1225 --cube-extents 0.05 0.05 0.05
 """
 

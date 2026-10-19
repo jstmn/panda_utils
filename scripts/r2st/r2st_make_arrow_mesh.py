@@ -43,7 +43,7 @@ WHY THE SHAPE MATTERS MORE HERE THAN FOR A CUBE
 USAGE
     source ~/anaconda3/bin/activate r2st
 
-    python scripts/r2st_make_arrow_mesh.py \
+    python scripts/r2st/r2st_make_arrow_mesh.py \
         --outdir ~/Desktop/real2sim-toolkit/data/meshyai720 \
         --camera cam_1 --slug arrow_shaped_object
 

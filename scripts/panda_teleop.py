@@ -27,7 +27,7 @@ from sensor_msgs.msg import JointState
 from termcolor import cprint
 
 # panda_utils.constants pulls in ROS 1 (rospy via panda_utils.utils). Same fallback as
-# scripts/log_demonstration2.py. Keep in sync with panda_utils/constants.py.
+# scripts/log_demonstration.py. Keep in sync with panda_utils/constants.py.
 try:
     from panda_utils.constants import SPACE_MOUSE_PRODUCT_ID, SPACE_MOUSE_VENDOR_ID
 except Exception:  # noqa: BLE001 - any import error means the ROS 1 chain is unavailable

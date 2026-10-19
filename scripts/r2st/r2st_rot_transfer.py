@@ -29,18 +29,18 @@ Usage:
     cd ~/Desktop/panda_utils
 
     # look first: prints the plan, does not move
-    python scripts/r2st_rot_transfer.py
+    python scripts/r2st/r2st_rot_transfer.py
 
     # the rotation table, dense where the policy actually operates, 3 repeats each
-    python scripts/r2st_rot_transfer.py --execute --axis y --repeats 3
-    python scripts/r2st_rot_transfer.py --execute --axis x --repeats 3
-    python scripts/r2st_rot_transfer.py --execute --axis z --repeats 3
+    python scripts/r2st/r2st_rot_transfer.py --execute --axis y --repeats 3
+    python scripts/r2st/r2st_rot_transfer.py --execute --axis x --repeats 3
+    python scripts/r2st/r2st_rot_transfer.py --execute --axis z --repeats 3
 
     # the coupling table: how much rotation each translation axis drags in
-    python scripts/r2st_rot_transfer.py --execute --mode trans --axis z --repeats 3
+    python scripts/r2st/r2st_rot_transfer.py --execute --mode trans --axis z --repeats 3
 
     # does a controller knob move either curve?
-    python scripts/r2st_rot_transfer.py --execute --axis y \
+    python scripts/r2st/r2st_rot_transfer.py --execute --axis y \
         --controller-cfg configs/osc-pose-tuned.yml --interp-time-fraction 0.6
 """
 

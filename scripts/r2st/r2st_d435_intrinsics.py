@@ -18,7 +18,7 @@ WHY THIS EXISTS
 
 ALIGNED DEPTH
     Record with depth aligned to colour (realsense2_camera `align_depth.enable:=true`), which
-    is what log_demonstration2.py's uint16-mm HDF5 layout already assumes. Then depth shares
+    is what log_demonstration.py's uint16-mm HDF5 layout already assumes. Then depth shares
     the colour grid, and you pass `--depth-intrinsics-source rgb` to
     estimate_camera_extrinsics.py, whose `depth` branch (the reproject_depth_to_color_frame
     call) is the only consumer of DEPTH_INTRINSICS / DEPTH_TO_COLOR_*. Those three entries are
@@ -28,8 +28,8 @@ ALIGNED DEPTH
 
 USAGE
     source ~/anaconda3/bin/activate act
-    python scripts/r2st_d435_intrinsics.py                          # 640x480, the USB2-safe profile
-    python scripts/r2st_d435_intrinsics.py --color 1280 720 --depth 848 480 --model-id d435_720p
+    python scripts/r2st/r2st_d435_intrinsics.py                          # 640x480, the USB2-safe profile
+    python scripts/r2st/r2st_d435_intrinsics.py --color 1280 720 --depth 848 480 --model-id d435_720p
 """
 from __future__ import annotations
 
@@ -103,7 +103,7 @@ def main() -> int:
     log(f"# color       : {ci.width}x{ci.height}  model={ci.model}  coeffs={list(ci.coeffs)}\n")
     log(f"# depth       : {di.width}x{di.height}  scale={scale} m/unit\n")
     if abs(scale - 0.001) > 1e-9:
-        log(f"# !! depth scale is {scale}, not 0.001 m/unit. log_demonstration2.decode_depth\n"
+        log(f"# !! depth scale is {scale}, not 0.001 m/unit. log_demonstration.decode_depth\n"
             f"#    passes 16UC1 through as millimetres, so a non-mm unit would be recorded\n"
             f"#    wrong. Set the depth units to 1000 um, or scale in the logger.\n")
     if any(abs(c) > 1e-6 for c in ci.coeffs):
