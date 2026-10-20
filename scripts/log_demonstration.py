@@ -1,7 +1,7 @@
 """Teleoperated demonstration logging with ZED cameras (ROS 2).
 
-Same UI, same HDF5 layout, same SpaceMouse teleop as the old ROS 1 logger.
-Camera source is ZED.
+Same UI and SpaceMouse teleop as the old ROS 1 logger. Camera source is ZED. Each demo is
+written in real2sim-toolkit's ManiSkill-style `obs/` layout (see ZedDataCollector.save).
 
 What changed vs the ROS 1 logger:
   * ROS 1 (rospy) -> ROS 2 (rclpy). Only Humble is installed on this machine.
@@ -31,19 +31,20 @@ Usage:
     # This
     python scripts/log_demonstration.py \
         --output_dir ~/Desktop/data/zed_demos --description raise_cube \
-        --recording_rate_hz 15.0 --camera_ids zed zed2i zedm --no-gripper --no-depth
+        --recording_rate_hz 15.0 --camera_ids zed zed2i zedm --zed_resolution VGA --no-gripper --no-depth
 
     # Or this
     python scripts/log_demonstration.py \
         --output_dir ~/Desktop/data/MPC_oct15 --description LiftPegUpright \
-        --recording_rate_hz 15.0 --camera_ids zed2i zedm
+        --recording_rate_hz 15.0 --camera_ids zed2i zedm --zed_resolution VGA
 
 
     # Discover live camera topics
     python scripts/log_demonstration.py --list-topics
 
 For the aux-pose (real2sim) pipeline: depth ON, and the D435 as the scene camera, so the
-frames FoundationPose labels are the frames the policy sees. See scripts/r2st/r2st_convert_demo.py.
+frames FoundationPose labels are the frames the policy sees. See scripts/r2st/r2st_convert_demo.py
+(which still reads the older flat layout, `<cam>__color_image` etc. at the file root).
 
 ros2 launch realsense2_camera rs_launch.py camera_namespace:=camera camera_name:=d435 \
     align_depth.enable:=true rgb_camera.color_profile:=640x480x30 \
@@ -51,7 +52,7 @@ ros2 launch realsense2_camera rs_launch.py camera_namespace:=camera camera_name:
 
 python scripts/log_demonstration.py \
     --output_dir ~/Desktop/data/aux_demos --description lift_peg \
-    --recording_rate_hz 15.0 --camera_ids d435=realsense zedm --no-gripper
+    --recording_rate_hz 15.0 --camera_ids d435=realsense zedm --zed_resolution VGA --no-gripper
 """
 
 from __future__ import annotations
@@ -67,6 +68,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
+from zoneinfo import ZoneInfo
 
 import cv2
 import h5py
@@ -94,6 +96,19 @@ except Exception:  # noqa: BLE001 - any import error means the ROS 1 chain is un
 CONTROLLER_TYPE = "OSC_POSE"
 
 RESET_JOINT_POSITIONS = [0.09162008, -0.19826458, -0.01990020, -2.47322699, -0.01307074, 2.30396583, 0.84809397]
+
+# Timing. One timestamp per sample per stream, aligned with obs/qpos. Two kinds of clock, and
+# only timestamps on the same clock can be compared:
+#   obs/sensor_data/<cam>/{,rgb_,depth_}timestamp_ms   host wall clock, float64 ms since the Unix epoch
+#   obs/robot_arm_ns, obs/robot_gripper_ns             Franka's own clocks, int64 ns since they booted
+# Internally everything is kept as int64 ns (time.time_ns(), ROS header stamps) until save().
+# Human-readable start/end times are written in LOCAL_TZ, which handles PST/PDT itself.
+LOCAL_TZ = ZoneInfo("America/Los_Angeles")
+HOST_CLOCK = "host wall clock, ns since Unix epoch"
+ROBOT_ARM_CLOCK = ("Franka controller (libfranka RobotState::time), ns since controller boot, "
+                   "1 ms resolution. Only comparable with itself.")
+ROBOT_GRIPPER_CLOCK = ("Franka gripper (libfranka GripperState::time), ns since gripper boot, "
+                       "1 ms resolution. Only comparable with itself.")
 
 
 
@@ -141,9 +156,20 @@ def parse_camera_spec(spec: str) -> tuple[str, str]:
         raise ValueError(f"unknown layout {layout!r} in {spec!r}; known: {sorted(LAYOUTS)}")
     return cam_id, layout
 
+# Image size (height, width) the USB ZEDs (ZED, ZED 2i, ZED Mini) publish for each
+# `general.grab_resolution`, set in ros2_ws/src/zed-ros2-wrapper/zed_wrapper/config/<model>.yaml.
+# Assumes `pub_resolution: 'NATIVE'` (common_stereo.yaml); 'CUSTOM' downscales and fails the check.
+ZED_RESOLUTIONS = {
+    "HD2K": (1242, 2208),
+    "HD1080": (1080, 1920),
+    "HD720": (720, 1280),
+    "VGA": (376, 672),
+}
+
 JOINT_NAMES = [f"panda_joint{i}" for i in range(1, 8)]
 GRIPPER_JOINT_NAMES = ["panda_finger_joint1", "panda_finger_joint2"]
 JOINT_PUBLISH_HZ = 50.0
+MONTAGE_EVERY = 10  # save the preview montage PNG for every Nth sample only
 TELEOP_HZ = 50.0
 
 
@@ -193,6 +219,39 @@ def decode_depth(msg: Image) -> np.ndarray:
     raise ValueError(f"unsupported depth encoding: {msg.encoding}")
 
 
+def stamp_to_ns(msg: Image) -> int:
+    return msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+
+
+def ns_to_local_str(ns: int) -> str:
+    """1792534323123456789 -> '2026-10-20T15:12:03.123-07:00 PDT'."""
+    t = datetime.fromtimestamp(ns // 1_000_000_000, LOCAL_TZ).replace(microsecond=(ns // 1000) % 1_000_000)
+    return f"{t.isoformat(timespec='milliseconds')} {t.tzname()}"
+
+
+def stream_stats(stamps_ns: np.ndarray, sample_ns: np.ndarray | None = None) -> dict:
+    """Rate / gap / repeat summary of one stream's per-sample timestamps.
+
+    A repeat is the same message recorded on two consecutive samples (the logger takes the
+    latest frame each tick and so outruns a slow stream). Age is how old the recorded message
+    was when it was sampled, so is only computed for streams on the host clock.
+    """
+    gaps_ms = np.diff(stamps_ns) / 1e6
+    span_s = (stamps_ns[-1] - stamps_ns[0]) / 1e9
+    n_unique = len(np.unique(stamps_ns))
+    stats = {
+        "n": int(len(stamps_ns)),
+        "rate_hz": round((n_unique - 1) / span_s, 2) if span_s > 0 else None,
+        "max_gap_ms": round(float(gaps_ms.max()), 1) if len(gaps_ms) else None,
+        "repeats": int((gaps_ms == 0).sum()),
+    }
+    if sample_ns is not None:
+        age_ms = (sample_ns - stamps_ns) / 1e6
+        stats["mean_age_ms"] = round(float(age_ms.mean()), 1)
+        stats["max_age_ms"] = round(float(age_ms.max()), 1)
+    return stats
+
+
 def camera_info_to_dict(msg: CameraInfo) -> dict:
     """Serialise CameraInfo without the ROS 1 to_public_dict helper."""
     return {
@@ -238,23 +297,25 @@ class ZedDataCollector(Node):
 
     def __init__(self, output_dir: Path, description: str, camera_ids: list[str],
                  robot_interface: FrankaInterface, topic_template: str,
-                 has_gripper: bool, best_effort: bool, record_depth: bool = True,
+                 has_gripper: bool, best_effort: bool, zed_resolution: str, record_depth: bool = True,
                  camera_layouts: dict[str, str] | None = None,
                  no_depth_cameras: set[str] | None = None):
         super().__init__("log_demonstration")
         for cam_id in camera_ids:
             assert "_" not in cam_id, f"Camera id cannot contain underscore: {cam_id}"
 
-        self.output_dir = output_dir / f"{description}__{datetime.now().strftime('%m-%d_%H-%M-%S')}"
+        self.output_dir = output_dir / f"{description}__{datetime.now().strftime('%m-%d-%Y__%H-%M-%S')}"
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._camera_ids = camera_ids
         self._robot = robot_interface
         self._has_gripper = has_gripper
+        self._zed_resolution = zed_resolution
+        self._zed_shape = ZED_RESOLUTIONS[zed_resolution]
+        self._zed_cams = {c for c in camera_ids if (camera_layouts or {}).get(c, DEFAULT_LAYOUT) == "zed"}
         # Depth is per-camera, not global. The wrist ZED is an RGB policy input only --
-        # nothing in the aux pipeline unprojects it -- and its 1280x720 uint16 depth is by
-        # far the largest thing in the file (~1.5 GB of a 2.5 GB demo). Dropping just that
-        # channel takes a 60-demo session from ~180 GB to ~60 GB without touching the D435
-        # depth the labels actually depend on.
+        # nothing in the aux pipeline unprojects it -- and its uint16 depth is by far the
+        # largest thing in the file. Dropping just that channel shrinks a session to roughly
+        # a third without touching the D435 depth the labels actually depend on.
         skip = set(no_depth_cameras or ())
         unknown = skip - set(camera_ids)
         assert not unknown, f"--no-depth-cameras names cameras that are not recorded: {sorted(unknown)}"
@@ -263,11 +324,16 @@ class ZedDataCollector(Node):
 
         self.joint_q: list[np.ndarray] = []
         self.joint_dq: list[np.ndarray] = []
+        self.sample_time_ns: list[int] = []
+        self.robot_arm_ns: list[int] = []
+        self.robot_gripper_ns: list[int] = []
         self.camera_data: dict[str, dict] = {}
         for cam_id in camera_ids:
             self.camera_data[cam_id] = {
                 "depth_images": [], "color_images": [],
+                "depth_stamps_ns": [], "color_stamps_ns": [],
                 "depth_camera_info": None, "color_camera_info": None,
+                # (stamp_ns, image), replaced as one object so a frame and its stamp never mix
                 "_latest_depth": None, "_latest_color": None,
             }
 
@@ -303,13 +369,13 @@ class ZedDataCollector(Node):
 
     def _color_cb(self, msg: Image, cam_id: str) -> None:
         try:
-            self.camera_data[cam_id]["_latest_color"] = decode_color(msg)
+            self.camera_data[cam_id]["_latest_color"] = (stamp_to_ns(msg), decode_color(msg))
         except ValueError as exc:
             self.get_logger().warn(f"{cam_id}: {exc}")
 
     def _depth_cb(self, msg: Image, cam_id: str) -> None:
         try:
-            self.camera_data[cam_id]["_latest_depth"] = decode_depth(msg)
+            self.camera_data[cam_id]["_latest_depth"] = (stamp_to_ns(msg), decode_depth(msg))
         except ValueError as exc:
             self.get_logger().warn(f"{cam_id}: {exc}")
 
@@ -334,6 +400,18 @@ class ZedDataCollector(Node):
             return False
         return True
 
+    def _check_dims(self, cam_id: str, color: np.ndarray, depth: np.ndarray | None) -> None:
+        """Assert a ZED camera's frames are the size --zed_resolution says they are."""
+        if cam_id not in self._zed_cams:
+            return
+        h, w = self._zed_shape
+        for kind, img in (("color", color), ("depth", depth)):
+            if img is not None:
+                assert img.shape[:2] == (h, w), (
+                    f"{cam_id} {kind} image is {img.shape[1]}x{img.shape[0]}, but --zed_resolution "
+                    f"{self._zed_resolution} is {w}x{h}. Check grab_resolution / pub_resolution in "
+                    "~/Desktop/ros2_ws/src/zed-ros2-wrapper/zed_wrapper/config/")
+
     def wait_for_frames(self, timeout_s: float = 20.0) -> bool:
         """Block until every camera has delivered colour (and depth, if enabled)."""
         need = ", ".join(f"{c}:{'colour+depth' if c in self._depth_cams else 'colour'}"
@@ -343,6 +421,14 @@ class ZedDataCollector(Node):
         while time.time() < deadline:
             missing = [c for c in self._camera_ids if not self._camera_ready(c)]
             if not missing:
+                try:
+                    for c in self._camera_ids:
+                        depth = self.camera_data[c]["_latest_depth"]
+                        self._check_dims(c, self.camera_data[c]["_latest_color"][1],
+                                         None if depth is None else depth[1])
+                except AssertionError as exc:
+                    cprint(f"❌ {exc}", "red")
+                    return False
                 cprint("✅ All cameras streaming", "green")
                 return True
             time.sleep(0.2)
@@ -357,9 +443,10 @@ class ZedDataCollector(Node):
     def start_recording(self) -> None:
         self._is_recording = True
         self.joint_q, self.joint_dq = [], []
+        self.sample_time_ns, self.robot_arm_ns, self.robot_gripper_ns = [], [], []
         for cam_id in self._camera_ids:
-            self.camera_data[cam_id]["depth_images"] = []
-            self.camera_data[cam_id]["color_images"] = []
+            for key in ("depth_images", "color_images", "depth_stamps_ns", "color_stamps_ns"):
+                self.camera_data[cam_id][key] = []
         cprint("🎬 Started recording", "green")
 
     def stop_recording(self) -> None:
@@ -376,17 +463,25 @@ class ZedDataCollector(Node):
         if not self._is_recording:
             return [], False
 
+        sample_ns = time.time_ns()
+
         # Read joints straight off the deoxys interface rather than round-tripping through
         # ROS as the ROS 1 logger did - fewer moving parts and no publisher/subscriber race.
-        arm_q = self._robot.last_q
-        if arm_q is None:
+        # q, dq and the arm clock all come from ONE state message: last_q and last_dq each
+        # re-read the newest message, so one arriving in between would mix two states.
+        state = self._robot.last_state
+        if state is None:
             return [], False
-        q = list(arm_q)
-        dq = list(self._robot.last_dq)
+        q = list(state.q)
+        dq = list(state.dq)
+        arm_ns = state.time.toMSec * 1_000_000
+        gripper_ns = None
         if self._has_gripper:
-            if self._robot.last_gripper_q is None:
+            if self._robot.gripper_state_buffer_size == 0:
                 return [], False
-            gripper_angle = float(self._robot.last_gripper_q) / 2.0
+            gripper = self._robot._gripper_state_buffer[-1]
+            gripper_angle = float(gripper.width) / 2.0
+            gripper_ns = gripper.time.toMSec * 1_000_000
             q += [gripper_angle, gripper_angle]
             dq += [0.0, 0.0]
 
@@ -400,19 +495,27 @@ class ZedDataCollector(Node):
                 depth = self.camera_data[cam_id]["_latest_depth"]
                 if depth is None:
                     continue
-                frames[cam_id] = (color, depth)
             else:
-                frames[cam_id] = (color, None)
+                depth = None
+            self._check_dims(cam_id, color[1], None if depth is None else depth[1])
+            frames[cam_id] = (color, depth)
 
         if len(frames) < len(self._camera_ids):
             return list(frames), False  # caller reports the missing cameras and stops
 
         self.joint_q.append(np.asarray(q, dtype=np.float64))
         self.joint_dq.append(np.asarray(dq, dtype=np.float64))
+        self.sample_time_ns.append(sample_ns)
+        self.robot_arm_ns.append(arm_ns)
+        if gripper_ns is not None:
+            self.robot_gripper_ns.append(gripper_ns)
         for cam_id, (color, depth) in frames.items():
-            self.camera_data[cam_id]["color_images"].append(color)
+            data = self.camera_data[cam_id]
+            data["color_stamps_ns"].append(color[0])
+            data["color_images"].append(color[1])
             if cam_id in self._depth_cams and depth is not None:
-                self.camera_data[cam_id]["depth_images"].append(depth)
+                data["depth_stamps_ns"].append(depth[0])
+                data["depth_images"].append(depth[1])
 
         return list(frames), True
 
@@ -423,12 +526,42 @@ class ZedDataCollector(Node):
             cprint("⚠️  0 joint states logged, nothing saved.", "red")
             return
 
-        h5_path = self.output_dir / f"{traj_name}.h5"
+        # e.g. traj_0__VGA.h5. Readers glob traj_*.h5 and parse the index with
+        # stem.split("_")[1] or r"traj_(\d+)", both of which still work with the suffix.
+        h5_path = self.output_dir / f"{traj_name}__{self._zed_resolution}.h5"
+        # real2sim-toolkit's ManiSkill-style layout ("Data formats" in its README, checked by
+        # r2st.utils.validate_merged_camera_group). Every dataset shares one frame index.
+        #   obs/qpos, obs/qvel                        (T,9) float64, (T,7) with --no-gripper
+        #   obs/robot_arm_ns, obs/robot_gripper_ns    int64 on Franka's own clocks, `clock` attr
+        #   obs/sensor_data/<cam>/rgb                 (T,H,W,3) uint8 RGB, gzip 1
+        #   obs/sensor_data/<cam>/depth               (T,H,W) uint16 mm registered to rgb, gzip 1
+        #   obs/sensor_data/<cam>/timestamp_ms        (T,) float64, sample tick (sample_time_ns / 1e6)
+        #   obs/sensor_data/<cam>/rgb_timestamp_ms    (T,) float64, capture stamp of that rgb frame
+        #   obs/sensor_data/<cam>/depth_timestamp_ms  (T,) float64, capture stamp of that depth frame
+        # All three *timestamp_ms are host wall clock, ms since the Unix epoch. They carry no
+        # `clock` attr because the toolkit expects plain float arrays there.
         with h5py.File(h5_path, "a") as f:
             q = np.array(self.joint_q)
             dq = np.array(self.joint_dq)
-            f.create_dataset("joint_states_q", data=q)
-            f.create_dataset("joint_states_dq", data=dq)
+            f.create_dataset("obs/qpos", data=q)
+            f.create_dataset("obs/qvel", data=dq)
+            f.attrs["zed_resolution"] = self._zed_resolution
+
+            # name -> (timestamps, clock, timestamps to measure age against)
+            sample_ns = np.array(self.sample_time_ns, dtype=np.int64)
+            streams = {"sample_time": (sample_ns, HOST_CLOCK, None),
+                       "robot_arm": (np.array(self.robot_arm_ns, dtype=np.int64), ROBOT_ARM_CLOCK, None)}
+            if self._has_gripper:
+                streams["robot_gripper"] = (np.array(self.robot_gripper_ns, dtype=np.int64),
+                                            ROBOT_GRIPPER_CLOCK, None)
+            for name in ("robot_arm", "robot_gripper"):
+                if name in streams:
+                    stamps, clock, _ = streams[name]
+                    f.create_dataset(f"obs/{name}_ns", data=stamps).attrs["clock"] = clock
+            f.attrs["timezone"] = str(LOCAL_TZ)
+            f.attrs["start_time_local"] = ns_to_local_str(int(sample_ns[0]))
+            f.attrs["end_time_local"] = ns_to_local_str(int(sample_ns[-1]))
+            f.attrs["duration_s"] = float(sample_ns[-1] - sample_ns[0]) / 1e9
 
             if self._has_gripper:
                 gripper_q = q[:, -1]
@@ -438,13 +571,38 @@ class ZedDataCollector(Node):
                     cprint("If the gripper was moving, restart the franka via https://172.16.0.2/desk/", "red")
 
             for cam_id in self._camera_ids:
-                if len(self.camera_data[cam_id]["color_images"]) == 0:
+                data = self.camera_data[cam_id]
+                if len(data["color_images"]) == 0:
                     continue
-                f.create_dataset(f"{cam_id}__color_image",
-                                 data=np.array(self.camera_data[cam_id]["color_images"]))
-                if cam_id in self._depth_cams and len(self.camera_data[cam_id]["depth_images"]) > 0:
-                    f.create_dataset(f"{cam_id}__depth_image",
-                                     data=np.array(self.camera_data[cam_id]["depth_images"]))
+                group = f.create_group(f"obs/sensor_data/{cam_id}")
+                group.create_dataset("timestamp_ms", data=sample_ns / 1e6)
+                kinds = [("color", "rgb")]
+                if cam_id in self._depth_cams and len(data["depth_images"]) > 0:
+                    kinds.append(("depth", "depth"))
+                for kind, name in kinds:
+                    group.create_dataset(name, data=np.array(data[f"{kind}_images"]),
+                                         compression="gzip", compression_opts=1)
+                    stamps = np.array(data[f"{kind}_stamps_ns"], dtype=np.int64)
+                    group.create_dataset(f"{name}_timestamp_ms", data=stamps / 1e6)
+                    streams[f"{cam_id}__{kind}"] = (stamps, HOST_CLOCK, sample_ns)
+
+        timing = {
+            "timezone": str(LOCAL_TZ),
+            "start_time_local": ns_to_local_str(self.sample_time_ns[0]),
+            "end_time_local": ns_to_local_str(self.sample_time_ns[-1]),
+            "duration_s": round((self.sample_time_ns[-1] - self.sample_time_ns[0]) / 1e9, 3),
+            "streams": {name: {"clock": clock, **stream_stats(stamps, age_ref)}
+                        for name, (stamps, clock, age_ref) in streams.items()},
+        }
+        with open(self.output_dir / f"{h5_path.stem}_timing.json", "w") as fh:
+            json.dump(timing, fh, indent=2)
+        cprint(f"\n⏱  {timing['start_time_local']} -> {timing['end_time_local']} "
+               f"({timing['duration_s']:.1f} s)", "cyan")
+        for name, st in timing["streams"].items():
+            line = f"   {name:<20} {st['rate_hz']} Hz, max gap {st['max_gap_ms']} ms, {st['repeats']} repeats"
+            if "mean_age_ms" in st:
+                line += f", age {st['mean_age_ms']}/{st['max_age_ms']} ms (mean/max)"
+            cprint(line, "white")
 
         for cam_id in self._camera_ids:
             kinds = [("color", "color_camera_info")]
@@ -455,7 +613,8 @@ class ZedDataCollector(Node):
                     with open(self.output_dir / f"{cam_id}_camera_info_{kind}.json", "w") as fh:
                         json.dump(self.camera_data[cam_id][key], fh, indent=2)
 
-        # Sample montages, one per timestep, for eyeballing the demo afterwards.
+        # Sample montages, every MONTAGE_EVERY-th timestep, for eyeballing the demo afterwards.
+        # Filenames keep the sample index, so a PNG still maps to its row in the HDF5.
         img_dir = self.output_dir / "images"
         img_dir.mkdir(exist_ok=True)
         cprint(f"\n📸 Saving sample images to {img_dir}...", "cyan")
@@ -473,10 +632,12 @@ class ZedDataCollector(Node):
         if available:
             num_samples = min(len(v) for v in available.values())
             ids = [c for c in self._camera_ids if c in available]
-            for i in range(num_samples):
+            saved = range(0, num_samples, MONTAGE_EVERY)
+            for i in saved:
                 save_combined_rgbs([available[c][i] for c in ids], ids,
                                    img_dir / f"combined_rgb__{traj_name}__{i:03d}.png")
-            cprint(f"   Saved {num_samples} combined RGB images as PNG", "white")
+            cprint(f"   Saved {len(saved)} combined RGB images as PNG (every {MONTAGE_EVERY}th of {num_samples})",
+                   "white")
 
         cprint(f"💾 Saved {len(self.joint_q)} samples to {h5_path}", "green")
 
@@ -584,6 +745,10 @@ def main() -> int:
                         help="Camera names as launched, optionally '<name>=<layout>' with layout "
                              f"in {sorted(LAYOUTS)} (default {DEFAULT_LAYOUT}). "
                              "e.g. zedm d435=realsense")
+    parser.add_argument("--zed_resolution", type=str, choices=sorted(ZED_RESOLUTIONS),
+                        help="grab_resolution the ZED cameras were launched with (required). Every ZED "
+                             "frame is checked against it, and it is saved as the HDF5 attr "
+                             "'zed_resolution'.")
     parser.add_argument("--topic-template", type=str, default=DEFAULT_TOPIC_TEMPLATE,
                         help=f"namespace template, '{{cam}}' substituted (default: {DEFAULT_TOPIC_TEMPLATE})")
     parser.add_argument("--interface-cfg", type=str, default=None)
@@ -595,7 +760,7 @@ def main() -> int:
                         help="rig has no gripper: do not wait for or record gripper state")
     parser.add_argument("--no-depth-cameras", type=str, nargs="*", default=None,
                         help="cameras to record WITHOUT depth, e.g. `--no-depth-cameras zedm`. "
-                             "The wrist ZED is an RGB policy input only, and its 720p depth is "
+                             "The wrist ZED is an RGB policy input only, and its depth is "
                              "most of the file size; the D435 depth the aux labels need is kept.")
     parser.add_argument("--no-depth", action="store_true",
                         help="do not subscribe to or record depth (colour + joints only)")
@@ -608,6 +773,8 @@ def main() -> int:
         return list_topics()
     if not args.output_dir:
         parser.error("--output_dir is required (or use --list-topics)")
+    if not args.zed_resolution:
+        parser.error(f"--zed_resolution is required, one of {sorted(ZED_RESOLUTIONS)}")
 
     args.run_teleop = str(args.run_teleop).lower() == "true"
     args.reset_joints = str(args.reset_joints).lower() == "true"
@@ -640,11 +807,17 @@ def main() -> int:
     cprint("=" * 60, "cyan")
     cprint(f"Output   : {args.output_dir}", "white")
     cprint(f"Cameras  : {camera_ids or '(none)'}", "white")
+    h, w = ZED_RESOLUTIONS[args.zed_resolution]
+    cprint(f"ZED res  : {args.zed_resolution} ({w}x{h})", "white")
     if not record_depth:
         cprint("Depth    : DISABLED for every camera (--no-depth)", "white")
     else:
         per_cam = ", ".join(f"{c}:{'off' if c in no_depth_cameras else 'on'}" for c in camera_ids)
         cprint(f"Depth    : {per_cam}", "white")
+    depthless = camera_ids if not record_depth else [c for c in camera_ids if c in no_depth_cameras]
+    if depthless:
+        cprint(f"⚠️  No depth for {depthless}: real2sim-toolkit requires depth for every camera, so these "
+               "obs/sensor_data groups will fail r2st.utils.validate_merged_camera_group.", "yellow")
     cprint(f"Gripper  : {'enabled' if has_gripper else 'DISABLED (--no-gripper)'}", "white")
     cprint("=" * 60 + "\n", "cyan")
 
@@ -668,7 +841,7 @@ def main() -> int:
 
     collector = ZedDataCollector(Path(args.output_dir).expanduser(), args.description, camera_ids,
                                  robot_interface, args.topic_template, has_gripper,
-                                 args.qos_best_effort, record_depth=record_depth,
+                                 args.qos_best_effort, args.zed_resolution, record_depth=record_depth,
                                  no_depth_cameras=no_depth_cameras,
                                  camera_layouts=camera_layouts)
 

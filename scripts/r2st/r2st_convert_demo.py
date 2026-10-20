@@ -5,7 +5,7 @@ real2sim-toolkit (`examples/track_object.py`, `examples/estimate_camera_extrinsi
 WHY THIS EXISTS
     The two repos disagree on layout, not on content:
 
-        log_demonstration.py  ->  traj_0.h5
+        log_demonstration.py  ->  traj_0__VGA.h5
                                      joint_states_q            (T, 9)   float64
                                      joint_states_dq           (T, 9)   float64
                                      <cam>__color_image        (T,H,W,3) uint8   RGB

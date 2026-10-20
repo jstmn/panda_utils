@@ -5,8 +5,8 @@ Requires:
   - ROS 2 Humble sourced: ``source /opt/ros/humble/setup.bash``
   - SpaceMouse readable (udev rule / correct vendor/product IDs)
 
-Example:
-  python scripts/panda_teleop.py --vendor-id 1133 --product-id 50726
+# Example usage:
+python scripts/panda_teleop.py --vendor-id 1133 --product-id 50726
 """
 
 from __future__ import annotations

@@ -48,14 +48,38 @@ pip install -e .
 # in every new terminal:
 conda activate panda_utils; source /opt/ros/humble/setup.bash; source ~/Desktop/ros2_ws/install/setup.bash
 
-# Terminal 1 - ZED cameras
-CAMS="zed2i zedm" bash ~/Desktop/ros2_ws/zed_tools/launch_all.sh
+# Terminal 1 - ZED cameras - Stop with `bash scripts/stop_zed.sh`
+# Resolution is VGA (672x376 @ 30fps, RGB + depth). launch_all.sh can't override it: to change, set
+# `grab_resolution` (HD2K | HD1080 | HD720 | VGA) in ~/Desktop/ros2_ws/src/zed-ros2-wrapper/zed_wrapper/config/{zed,zed2i,zedm}.yaml,
+# then rebuild: (cd ~/Desktop/ros2_ws && colcon build --packages-select zed_wrapper)
+CAMS="zed zed2i zedm" bash ~/Desktop/ros2_ws/zed_tools/launch_all.sh
+
 
 # Terminal 2 - Teleoperation + log demonstrations [Option 1]
 python scripts/log_demonstration.py \
-  --output_dir ~/Desktop/data/<OUTPUT_DIR> --description <DESCRIPTION> \
-  --recording_rate_hz 20.0 --camera_ids zed2i zedm
+  --output_dir /home/res1/Desktop/real2sim-toolkit/data/Oct20_2026_datacollect --description PickCube \
+  --recording_rate_hz 20.0 --camera_ids zed zed2i zedm --zed_resolution VGA
 
 # Terminal 2 - Teleoperation [Option 2]
 python scripts/panda_teleop.py
 ```
+
+### Output format
+
+`log_demonstration.py` writes one HDF5 per demo, `<output_dir>/<description>__<MM-DD-YYYY__HH-MM-SS>/traj_<i>__<zed_resolution>.h5`,
+in [real2sim-toolkit](https://github.com/jstmn/real2sim-toolkit)'s ManiSkill layout (from "Data formats" in its README,
+checked by `r2st.utils.validate_merged_camera_group`). All datasets share one frame index; `*` marks extras beyond the toolkit's spec.
+
+| Dataset | Shape, dtype | Notes |
+| --- | --- | --- |
+| `obs/qpos`, `obs/qvel`* | `(T, 9)` float64 | `panda_joint1..7`, `panda_finger_joint1/2`. `(T, 7)` with `--no-gripper` |
+| `obs/sensor_data/<cam>/rgb` | `(T, H, W, 3)` uint8 | RGB, gzip 1. `<cam>` is the `--camera_ids` name |
+| `obs/sensor_data/<cam>/depth` | `(T, H, W)` uint16 | mm, registered to `rgb` (unproject with the color K), gzip 1 |
+| `obs/sensor_data/<cam>/timestamp_ms` | `(T,)` float64 | When the logger took sample `i`. Same for every camera |
+| `obs/sensor_data/<cam>/{rgb,depth*}_timestamp_ms` | `(T,)` float64 | Capture time of that frame |
+| `obs/robot_arm_ns`*, `obs/robot_gripper_ns`* | `(T,)` int64 | Franka's own clocks (ns since boot, 1 ms resolution). Only comparable with themselves |
+
+`*_timestamp_ms` are host wall clock, Unix-epoch ms. Root attrs: `zed_resolution`, `timezone`, `start_time_local`,
+`end_time_local`, `duration_s`. Without depth (`--no-depth`, `--no-depth-cameras`) a camera fails the toolkit's validator.
+Also written per demo: `<stem>_timing.json`, `<cam>_camera_info_{color,depth}.json` (rectified intrinsics), and `images/`
+(a preview every 10th sample).
