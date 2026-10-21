@@ -117,13 +117,13 @@ sudo cp /home/res1/Desktop/panda_utils/udev/99-spacemouse.rules /etc/udev/rules.
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
-### SpaceMouse vendor/product IDs in `panda_teleop.py` are wrong for this device
+### SpaceMouse vendor/product IDs in `run_teleop.py` are wrong for this device
 
 The connected device is `046d:c626` — a **Logitech-branded 3Dconnexion SpaceNavigator**:
 
 | | vendor | product |
 |---|---|---|
-| `panda_teleop.py` defaults | 9583 (`0x256F`) | 50741 (`0xC635`) |
+| `run_teleop.py` defaults | 9583 (`0x256F`) | 50741 (`0xC635`) |
 | **this device** | **1133 (`0x046D`)** | **50726 (`0xC626`)** |
 
 The defaults are for a 3Dconnexion-branded SpaceMouse Compact. Either pass
@@ -144,7 +144,7 @@ omits at 0, rendering the gripper shut.
 `panda_utils.deoxys_controller` do too (plus `tf.transformations`, `jrl2`, `open3d`).
 **Only ROS2 Humble is installed** — there is no `/opt/ros/noetic`.
 
-`scripts/log_demonstration.py` and `scripts/panda_teleop.py` are ROS 2.
+`scripts/log_demonstration.py` and `scripts/run_teleop.py` are ROS 2.
 `scripts/franka_manipulation.py` is deliberately ROS-free so it runs today.
 `src/panda_utils/rgb_subscriber_ros2_zed.py` is ROS 2 as well.
 

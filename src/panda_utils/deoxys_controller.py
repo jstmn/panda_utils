@@ -7,7 +7,7 @@ from datetime import datetime
 from trimesh.primitives import Box
 import numpy as np
 from termcolor import cprint
-from tf.transformations import euler_from_matrix
+from scipy.spatial.transform import Rotation
 import matplotlib
 import matplotlib.pyplot as plt
 import open3d as o3d
@@ -22,7 +22,7 @@ from deoxys.utils.yaml_config import YamlConfig
 from deoxys.franka_interface import FrankaInterface
 from deoxys.experimental.motion_utils import reset_joints_to
 
-from panda_utils.constants import WORKSPACE_BOUNDS
+from panda_utils.constants import RESET_JOINT_POSITIONS, WORKSPACE_BOUNDS  # noqa: F401 - re-exported
 
 
 PI_ON_4 = np.pi / 4
@@ -30,17 +30,14 @@ PI_ON_2 = np.pi / 2
 VALID_QPOS_LIMIT_PADDING = 0.005
 TABLE_PADDING = 0.015
 
-RESET_JOINT_POSITIONS = [
-    0.09162008114028396,
-    -0.19826458111314524,
-    -0.01990020486871322,
-    -2.4732269941140346,
-    -0.01307073642274261,
-    2.30396583422025,
-    0.8480939705504309,
-]
 should_close = False
 np.set_printoptions(linewidth=200, precision=4, suppress=True)
+
+
+def euler_from_matrix(matrix: np.ndarray) -> np.ndarray:
+    """Static-frame xyz euler angles [rx, ry, rz] of a rotation matrix. Replaces tf.transformations.euler_from_matrix
+    (ROS 1 only) with its default axes='sxyz'."""
+    return Rotation.from_matrix(np.asarray(matrix)[:3, :3]).as_euler("xyz")
 
 
 def wait_for_robot_ready(franka_interface: FrankaInterface):
@@ -680,17 +677,6 @@ class DeoxysController:
 
         print("joint_velocity_control() | Finished")
 
-
-
-"""
-# Terminal 1
-source /opt/ros/noetic/setup.bash; roscore
-
-
-# Terminal 2
-cd ${panda_utils_DIR}; source /opt/ros/noetic/setup.bash; source hardware_venv/bin/activate;
-python panda_utils/deoxys_controller.py
-"""
 
 if __name__ == "__main__":
     project_dir = Path(__file__).parent.parent

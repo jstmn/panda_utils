@@ -845,8 +845,6 @@ def main(deoxys_interface_cfg: str, dont_plot: bool, method: str, launch_viser: 
     controller.exit()
 
 """ 
-source /opt/ros/noetic/setup.bash; source ${ROS_WS}/devel/setup.bash; conda activate hardware_env; cd ${PANDA_UTILS_DIR}
-
 # Run
 python scripts/deoxys_tuning.py \
     --deoxys-interface-cfg configs/charmander.yml \

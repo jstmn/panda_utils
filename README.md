@@ -20,8 +20,7 @@ Almost always I recommend using [uv](https://docs.astral.sh/uv/) or [pixi](https
 sudo apt install libhidapi-hidraw0 libhidapi-libusb0
 echo "DEOXYS_DIR='/PATH/TO/deoxys_control'" >> ~/.bashrc; source ~/.bashrc
 echo "PYTHONPATH='$PYTHONPATH:$DEOXYS_DIR/deoxys/'" >> ~/.bashrc; source ~/.bashrc
-echo "ROS_WS='/PATH/TO/ROS_WS'" >> ~/.bashrc; source ~/.bashrc
-echo "PANDA_UTILS_DIR='/PATH/TO/panda_utils'" >> ~/.bashrc; source ~/.bashrc
+echo "ROS_WS='/PATH/TO/ROS2_WS'" >> ~/.bashrc; source ~/.bashrc
 
 # Create and activate a conda environment called `panda`:
 conda create -n panda_utils python=3.10 -y
@@ -61,7 +60,7 @@ python scripts/log_demonstration.py \
   --recording_rate_hz 20.0 --camera_ids zed zed2i zedm --zed_resolution VGA
 
 # Terminal 2 - Teleoperation [Option 2]
-python scripts/panda_teleop.py
+python scripts/run_teleop.py
 ```
 
 ### Output format
@@ -83,3 +82,22 @@ checked by `r2st.utils.validate_merged_camera_group`). All datasets share one fr
 `end_time_local`, `duration_s`. Without depth (`--no-depth`, `--no-depth-cameras`) a camera fails the toolkit's validator.
 Also written per demo: `<stem>_timing.json`, `<cam>_camera_info_{color,depth}.json` (rectified intrinsics), and `images/`
 (a preview every 10th sample).
+
+
+## Agent control
+
+`scripts/agent_control.py` lets a Claude model drive the end effector from camera images. Each step it sends the
+last `--history_length` observations, gets back one structured pose delta (cm / deg, plus gripper open/closed), caps
+it per step, clamps it to `WORKSPACE_BOUNDS`, and servos there with deoxys `OSC_POSE`. There is no collision checking,
+and every step waits for ENTER unless `--auto` is passed. Library code is in `src/panda_utils/agent_control/`.
+
+```bash
+# deoxys env + ROS 2, cameras running as above. Needs ANTHROPIC_API_KEY (or `ant auth login`).
+python scripts/agent_control.py --task "pick up the red cube" --camera_ids zed zed2i zedm \
+  --model claude-opus-5-5 --history_length 3 --frame ee \
+  --draw_ee_frame --extrinsics zed2i=/path/to/extrinsics.yaml
+```
+
+`--frame world` expresses deltas in the robot base frame, `--frame ee` in the gripper's frame. `--draw_ee_frame` draws
+the EE axes (x/y/z = red/green/blue) on cameras that have `--extrinsics` (the `r2st_handeye.py` YAML schema). Each
+run logs the images sent, the model's actions and token usage to `logs/agent_control/`.

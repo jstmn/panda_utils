@@ -1,8 +1,15 @@
-import rospy
-from deoxys.franka_interface import FrankaInterface
-import numpy as np
-import cv2
+from __future__ import annotations
+
+import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+import cv2
+import numpy as np
+from termcolor import cprint
+
+if TYPE_CHECKING:
+    from deoxys.franka_interface import FrankaInterface
 
 
 def cm_to_m(cm: float) -> float:
@@ -38,30 +45,25 @@ def to_public_dict(obj):
     return result
 
 
-def wait_for_deoxys_ready(robot_interface: FrankaInterface) -> bool:
-    rate = rospy.Rate(50)
+def wait_for_deoxys_ready(robot_interface: FrankaInterface, rate_hz: float = 50.0, max_failures: int = 100) -> bool:
+    """Block until deoxys is streaming arm and gripper state. ROS-agnostic, so usable from ROS 1 and ROS 2 scripts.
 
-    failed_counter = 0
-    while not rospy.is_shutdown():
-        rate.sleep()
+    Returns:
+        bool: True once both are available, False after `max_failures` consecutive polls without them.
+    """
+    for n_failures in range(max_failures):
+        time.sleep(1.0 / rate_hz)
         arm_q = robot_interface.last_q
         last_gripper_q = robot_interface.last_gripper_q
-
-        # Check if the arm q or gripper angle is available
-        if arm_q is None or last_gripper_q is None:
-            if failed_counter % 10 == 0:
-                rospy.logwarn(
-                    f"Arm q or gripper angle isn't available. Is deoxys running on the RT pc? last_gripper_q: {last_gripper_q}, arm_q={arm_q}"
-                )
-            failed_counter += 1
-            if failed_counter > 100:
-                rospy.logerr("Failed to get arm q or gripper angle for 100 consecutive times. Shutting down.")
-                rospy.signal_shutdown("Failed to get arm q or gripper angle for 100 consecutive times")
-                return False
-            continue
-
-        return True
-
+        if arm_q is not None and last_gripper_q is not None:
+            return True
+        if n_failures % 10 == 0:
+            cprint(
+                f"Arm q or gripper angle isn't available. Is deoxys running on the RT pc? last_gripper_q: "
+                f"{last_gripper_q}, arm_q={arm_q}",
+                "yellow",
+            )
+    cprint(f"Failed to get arm q or gripper angle for {max_failures} consecutive polls.", "red")
     return False
 
 

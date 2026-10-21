@@ -9,13 +9,17 @@ description = "Pointcloud utils and control for the franka panda robot"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "anthropic",
     "h5py",
     "jrl2 @ git+https://github.com/jstmn/Jrl2.git",
     "matplotlib",
     "numpy",
     "open3d",
     "opencv-python",
+    "pydantic",
+    "pyyaml",
     "rospkg",
+    "scipy",
     "termcolor",
 ]
 
@@ -27,3 +31,7 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/panda_utils"]
+
+# jrl2 is a git dependency, which hatchling refuses without this.
+[tool.hatch.metadata]
+allow-direct-references = true

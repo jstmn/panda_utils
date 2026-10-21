@@ -6,7 +6,7 @@ Requires:
   - SpaceMouse readable (udev rule / correct vendor/product IDs)
 
 # Example usage:
-python scripts/panda_teleop.py --vendor-id 1133 --product-id 50726
+python scripts/run_teleop.py --vendor-id 1133 --product-id 50726
 """
 
 from __future__ import annotations
