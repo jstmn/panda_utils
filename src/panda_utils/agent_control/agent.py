@@ -52,15 +52,30 @@ PRICES_PER_MTOK = {
 }
 JPEG_QUALITY = 90
 
-FRAME_DESCRIPTIONS = {
+# Checked against the real arm: at the home pose the reported orientation is roll/pitch/yaw ~ (180, -2, 1) deg, with the
+# gripper's +z along world -z, +y along world -y and +x along world +x.
+COORDINATES_TEXT = (
+    "Coordinates. The world frame is fixed to the robot's base: +x points forward, away from the base; +y points to "
+    "the robot's left; +z points up. Every gripper pose you are given is in the world frame: the position (cm) of the "
+    "gripper's center point, midway between the fingertips, and its orientation as roll / pitch / yaw (deg), "
+    "rotations about the world x, y and z axes applied in that order. Roll = pitch = yaw = 0 would point the fingers "
+    "straight up; roll = 180 points them straight down.\n"
+    "The gripper frame is attached to that center point and moves with the gripper: +z points out of the gripper toward "
+    "the fingertips (the direction it reaches), +y is the line the two fingers open and close along, and +x is "
+    "perpendicular to both (right-handed). In the home pose the gripper points straight down: its +x is world +x, "
+    "+y is world -y (the robot's right) and +z is world -z."
+)
+ACTION_FRAME_TEXT = {
     "world": (
-        "the robot base frame: +x points forward away from the robot base, +y to the robot's left, +z up. "
-        "Rotations are about these fixed axes, through the gripper."
+        "Your action moves the gripper relative to where it is now, in the world frame: dx / dy / dz shift it along "
+        "world x / y / z, and droll / dpitch / dyaw rotate it about world x / y / z, pivoting about the gripper's center "
+        "point (a pure rotation does not move that point). For example dz = -2 lowers the gripper 2 cm."
     ),
     "ee": (
-        "the end effector frame, attached to the gripper: +z points out of the gripper toward the fingertips, and "
-        "the fingers open and close along y. Translations and rotations are along and about the gripper's current "
-        "axes, so they move with it."
+        "Your action moves the gripper relative to where it is now, in the gripper frame as it is at that moment: "
+        "dx / dy / dz shift it along the gripper's own x / y / z axes, and droll / dpitch / dyaw rotate it about those "
+        "axes, pivoting about the gripper's center point. For example dz = +2 moves the gripper 2 cm in the direction "
+        "the fingertips point, whichever way that is."
     ),
 }
 
@@ -140,11 +155,13 @@ def build_system_prompt(
         "",
         f"Task: {task}",
         "",
-        f"Motions are relative to the gripper's current pose and expressed in {FRAME_DESCRIPTIONS[frame]}",
+        COORDINATES_TEXT,
+        "",
+        ACTION_FRAME_TEXT[frame],
         (
             f"One step moves at most {max_translation_cm:g} cm and rotates at most {max_rotation_deg:g} degrees; larger "
             "requests are scaled down, keeping their direction. Targets outside the robot's workspace are clamped to its "
-            "edge. Prefer several small, deliberate steps near objects over one large one."
+            "edge" #. Prefer several small, deliberate steps near objects over one large one.
         ),
         "The gripper command is applied after the motion, and stays as set until you change it.",
     ]
@@ -193,7 +210,7 @@ class PoseDeltaAgent:
     def _observation_parts(self, obs: Observation, label: str) -> list[tuple[str, str]]:
         """("text", str) / ("image", base64 jpeg) parts, converted to each provider's block format at call time."""
         gripper = "unknown" if obs.gripper_width_m is None else f"{obs.gripper_width_m * 100:.1f} cm open"
-        parts = [("text", f"{label}\nGripper: {pose_to_text(obs.T_base_ee)}; width {gripper}.")]
+        parts = [("text", f"{label}\nGripper (world frame): {pose_to_text(obs.T_base_ee)}; fingers {gripper}.")]
         for cam_id, image in obs.images.items():
             parts += [("text", f"Camera '{cam_id}':"), ("image", encode_jpeg_b64(image))]
         if obs.action is not None:

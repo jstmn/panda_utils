@@ -6,12 +6,14 @@ Three standalone panels (movable, dockable windows) plus the 3D scene:
     Response  the model's reasoning and action, what was executed after clamping, and how execution went
     3D scene  the Panda at its live joint state, the world (robot base) frame, the current end effector pose, and the
               desired next end effector pose (the model's step after clamping, i.e. what the arm is sent to)
+    Run       elapsed time vs. estimated model cost so far, and vs. actions executed so far
 Main panel: status, and a reset button that homes the robot and clears the observation history.
 """
 
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable, Sequence
 
 import numpy as np
@@ -27,6 +29,8 @@ ROBOT_UPDATE_HZ = 20.0
 LIVE_IMAGE_EVERY = 4  # live camera images update every Nth robot update, i.e. 5 Hz
 ROBOT_COLOR_RGBA = (0.7, 0.72, 0.75, 0.6)
 CURRENT_EE_ORIGIN_COLOR = (236, 236, 0)
+# Run charts: one series each, in the dataviz reference palette's first categorical slot.
+RUN_CHART_COLOR = "#2a78d6"
 DESIRED_EE_ORIGIN_COLOR = (220, 0, 220)
 BLANK_IMAGE = np.zeros((376, 672, 3), dtype=np.uint8)
 # Jrl2 models of this arm. The live joint angles come from the Franka, so only Panda variants make sense.
@@ -61,6 +65,7 @@ class AgentViewer:
         self.server = viser.ViserServer(port=port)
         self._camera_ids = list(camera_ids)
         self._stop = threading.Event()
+        self._t0: float | None = None  # x axis of the run charts: seconds since start_clock()
         self._thread: threading.Thread | None = None
         self._response_md = ""
         # Set by the reset button (viser runs it in a worker thread). The control loop polls it, does the reset at a
@@ -132,6 +137,34 @@ class AgentViewer:
         response.dock_right()
         response.set_width(420)
         prompt.dock_below(response)
+
+        # -- Run panel ---------------------------------------------------------
+        run = gui.add_panel()
+        with run.add_tab("Run", viser.Icon.CHART_LINE):
+            self._charts = {
+                "cost": self._add_step_chart("Model cost so far (estimated)", "USD", "cost (USD)"),
+                "actions": self._add_step_chart("Actions executed so far", "actions", "actions"),
+            }
+        self._chart_events: dict[str, list[tuple[float, float]]] = {key: [] for key in self._charts}
+        run.dock_below(cameras)
+
+    def _add_step_chart(self, title: str, y_label: str, series_label: str) -> viser.GuiUplotHandle:
+        return self.server.gui.add_uplot(
+            data=(np.zeros(2), np.zeros(2)),
+            series=(
+                {"label": "elapsed (s)"},
+                {"label": series_label, "stroke": RUN_CHART_COLOR, "width": 2, "points": {"show": False}},
+            ),
+            title=title,
+            scales=self._chart_scales(1.0),
+            axes=({"label": "elapsed since first model call (s)"}, {"label": y_label}),
+            aspect=3.0,
+        )
+
+    @staticmethod
+    def _chart_scales(y_max: float) -> dict:
+        # x in seconds, not Unix timestamps. y from 0 with headroom, so the top tick label isn't clipped by the title.
+        return {"x": {"time": False}, "y": {"range": (0.0, 1.15 * y_max if y_max > 0 else 1.0)}}
 
     @property
     def url(self) -> str:
@@ -266,3 +299,33 @@ class AgentViewer:
         self._desired_frame.visible = False
         self.reset_requested.clear()
         self._reset_button.disabled = False
+
+    # -- run charts ---------------------------------------------------------------
+
+    def start_clock(self, t0: float) -> None:
+        """Set the wall clock time the run charts' x axis counts from (the first model call)."""
+        self._t0 = t0
+
+    def record_cost(self, run_cost_usd: float) -> None:
+        """Plot the estimated model cost so far at the current time."""
+        self._record("cost", run_cost_usd)
+
+    def record_actions(self, n_actions: int) -> None:
+        """Plot the number of actions executed so far at the current time."""
+        self._record("actions", n_actions)
+
+    def _record(self, key: str, value: float) -> None:
+        if self._t0 is None:
+            self.start_clock(time.time())
+        t_now = time.time() - self._t0
+        events = self._chart_events[key]
+        events.append((t_now, float(value)))
+        # Drawn as steps: both quantities only change at the moment an event happens.
+        xs, ys, previous = [0.0], [0.0], 0.0
+        for t, v in events:
+            xs += [t, t]
+            ys += [previous, v]
+            previous = v
+        chart = self._charts[key]
+        chart.scales = self._chart_scales(max(ys))
+        chart.data = (np.array(xs), np.array(ys))

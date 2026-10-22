@@ -31,15 +31,20 @@ GRIPPER_OPEN = -1.0
 GRIPPER_CLOSED = 1.0
 
 ARM_JOINT_NAMES = [f"panda_joint{i}" for i in range(1, 8)]
-# The table, as in DeoxysController: a 2 cm slab spanning WORKSPACE_BOUNDS in x and y, with its top TABLE_PADDING_M above
-# the workspace floor so that contact is flagged before the fingers reach the surface.
+# The table: a 2 cm slab spanning WORKSPACE_BOUNDS in x and y, with its top TABLE_PADDING_M above the workspace floor.
+# DeoxysController uses 1.5 cm; lowered to 0 here (table top at the workspace floor) because at 1.5 cm and then 0.5 cm,
+# fingers resting just above the real table read as in collision.
 TABLE_THICKNESS_M = 0.02
-TABLE_PADDING_M = 0.015
+TABLE_PADDING_M = 0.0
 TABLE_NAME = "table"
 # Measured joint angles can be slightly outside the URDF limits (as in DeoxysController).
 JOINT_LIMIT_PADDING_RAD = 0.005
 # Longest controller rollout simulated when checking a move before executing it.
 PREDICT_MAX_TICKS = 300
+# Agent moves take larger steps per control() call than the fork's default (osc-pose-precise-controller.yml, 1 cm /
+# 0.05 rad, which teleop keeps). Each command leads the measured pose by at most one step, so the step also sets how
+# hard the joint impedance controller pulls: at 1 cm, measured moves topped out around 5-6 cm/s.
+ACTION_SCALE_MULTIPLIER = 2.0
 
 
 # -- The model's action ----------------------------------------------------------------------------------------------
@@ -53,12 +58,12 @@ class EEPoseDelta(BaseModel):
     """Relative end effector motion, expressed in the control frame chosen for the run (world or end effector)."""
 
     reasoning: str = Field(description="One or two sentences: what you see, and why this motion.")
-    dx_cm: float = Field(description="Translation along the control frame's x axis, in centimeters.")
-    dy_cm: float = Field(description="Translation along the control frame's y axis, in centimeters.")
-    dz_cm: float = Field(description="Translation along the control frame's z axis, in centimeters.")
-    droll_deg: float = Field(description="Rotation about the control frame's x axis, in degrees.")
-    dpitch_deg: float = Field(description="Rotation about the control frame's y axis, in degrees.")
-    dyaw_deg: float = Field(description="Rotation about the control frame's z axis, in degrees.")
+    dx_cm: float = Field(description="Translation along x, in centimeters, in the action frame the prompt describes.")
+    dy_cm: float = Field(description="Translation along y, in centimeters, in the action frame the prompt describes.")
+    dz_cm: float = Field(description="Translation along z, in centimeters, in the action frame the prompt describes.")
+    droll_deg: float = Field(description="Rotation about x, in degrees, in the action frame the prompt describes.")
+    dpitch_deg: float = Field(description="Rotation about y, in degrees, in the action frame the prompt describes.")
+    dyaw_deg: float = Field(description="Rotation about z, in degrees, in the action frame the prompt describes.")
     gripper: Literal["open", "closed"] = Field(description="Gripper command, held after this motion.")
     task_complete: bool = Field(description="True only if the task is already done in the current images.")
 
@@ -116,12 +121,13 @@ def pose_error(T_target: np.ndarray, T_current: np.ndarray) -> tuple[np.ndarray,
 
 
 def pose_to_text(T_base_ee: np.ndarray) -> str:
-    """Human readable pose for the prompt: position in cm, orientation as static-xyz euler angles in degrees."""
+    """Human readable world frame pose for the prompt: position in cm, orientation as roll / pitch / yaw in degrees
+    (static-xyz euler angles: about world x, then y, then z)."""
     xyz_cm = T_base_ee[:3, 3] * 100.0
     rpy_deg = Rotation.from_matrix(T_base_ee[:3, :3]).as_euler("xyz", degrees=True)
     return (
-        f"position (cm) x={xyz_cm[0]:.1f} y={xyz_cm[1]:.1f} z={xyz_cm[2]:.1f}; "
-        f"orientation (deg, roll/pitch/yaw about world x/y/z) {rpy_deg[0]:.1f} / {rpy_deg[1]:.1f} / {rpy_deg[2]:.1f}"
+        f"position x={xyz_cm[0]:.1f}, y={xyz_cm[1]:.1f}, z={xyz_cm[2]:.1f} cm; "
+        f"roll / pitch / yaw = {rpy_deg[0]:.1f} / {rpy_deg[1]:.1f} / {rpy_deg[2]:.1f} deg"
     )
 
 
@@ -192,19 +198,23 @@ class EEPoseServo:
     """Closed-loop pose tracking on OSC_POSE_PRECISE: each tick re-measures the remaining error to the target and
     sends it as the action; deoxys limits each part to one action_scale per control() call.
 
-    With a CollisionChecker, a move is first simulated with the controller's own IK step (perfect tracking from the
-    current state) and not started if the arm is in collision now or anywhere along the simulated path. While moving,
-    the joint target each command will produce is recomputed from the latest state and checked before it is sent.
+    Every move is collision checked: it is first simulated with the controller's own IK step (perfect tracking from
+    the current state) and not started if the arm is in collision now or anywhere along the simulated path. While
+    moving, the joint target each command will produce is recomputed from the latest state and checked before it is
+    sent. The timeout and the reported duration count from when the arm starts moving, after that check.
+
+    The controller's action_scale (largest step per call) is multiplied by `action_scale_multiplier` for these moves.
     """
 
     def __init__(
         self,
         robot: FrankaInterface,
-        position_tolerance_m: float = 0.003,
+        collision_checker: CollisionChecker,
+        position_tolerance_m: float = 0.005,
         rotation_tolerance_rad: float = np.deg2rad(1.0),
-        timeout_s: float = 6.0,
+        timeout_s: float = 1.5,
         gripper_settle_s: float = 1.0,
-        collision_checker: CollisionChecker | None = None,
+        action_scale_multiplier: float = ACTION_SCALE_MULTIPLIER,
     ):
         from deoxys.franka_interface.osc_pose_precise import (
             PandaJacobian,
@@ -213,7 +223,10 @@ class EEPoseServo:
         from deoxys.utils.config_utils import get_default_controller_config
 
         self._robot = robot
+        # A fresh copy from the YAML, so this doesn't change the default for anyone else (e.g. teleop)
         self._cfg = get_default_controller_config(controller_type=CONTROLLER_TYPE)
+        self._cfg.action_scale.translation *= action_scale_multiplier
+        self._cfg.action_scale.rotation *= action_scale_multiplier
         self._collision_checker = collision_checker
         self._kinematics = PandaJacobian()
         self._joint_target = osc_pose_precise_joint_target  # the fork's IK step, to predict what a command will do
@@ -247,7 +260,7 @@ class EEPoseServo:
 
     def predict_path(self, T_target: np.ndarray, q: np.ndarray, T_ee: np.ndarray) -> list[np.ndarray]:
         """Joint positions the controller would command, tick by tick, moving from (q, T_ee) to `T_target` if the arm
-        tracked every command exactly. Needs a collision checker, for its forward kinematics."""
+        tracked every command exactly."""
         # Measured O_T_EE vs the model's panda_hand_tcp (they differ by the end effector configured in Franka Desk)
         tcp_T_ee = np.linalg.inv(self._collision_checker.fk_tcp(q)) @ T_ee
         path = []
@@ -270,25 +283,21 @@ class EEPoseServo:
         self, T_target: np.ndarray, gripper: float, should_stop: Callable[[], bool] = lambda: False
     ) -> ServoResult:
         """Track `T_target` [4, 4] (base frame) until within tolerance, `should_stop()`, or the timeout. Then apply
-        `gripper` and hold while it settles."""
-        t0 = time.time()
+        `gripper` and hold while it settles (not counted in the reported duration)."""
         reached = False
         # The gripper keeps its previous command during the motion; the new one is applied once there.
         gripper_during = self._last_gripper if self._last_gripper is not None else gripper
         checker = self._collision_checker
-        if checker is not None:
-            q, T_ee, width = (
-                np.asarray(self._robot.last_q),
-                np.asarray(self._robot.last_eef_pose),
-                self._gripper_width(),
-            )
-            pairs = checker.colliding_pairs(q, width)
+        q, T_ee, width = np.asarray(self._robot.last_q), np.asarray(self._robot.last_eef_pose), self._gripper_width()
+        pairs = checker.colliding_pairs(q, width)
+        if pairs:
+            return self._blocked(T_target, time.time(), "current", pairs)
+        for q_predicted in self.predict_path(T_target, q, T_ee):
+            pairs = checker.colliding_pairs(q_predicted, width)
             if pairs:
-                return self._blocked(T_target, t0, "current", pairs)
-            for q_predicted in self.predict_path(T_target, q, T_ee):
-                pairs = checker.colliding_pairs(q_predicted, width)
-                if pairs:
-                    return self._blocked(T_target, t0, "predicted", pairs)
+                return self._blocked(T_target, time.time(), "predicted", pairs)
+
+        t0 = time.time()
         while not should_stop():
             q, T_ee = np.asarray(self._robot.last_q), np.asarray(self._robot.last_eef_pose)
             e_pos, e_rot = pose_error(T_target, T_ee)
@@ -297,21 +306,21 @@ class EEPoseServo:
                 break
             if time.time() - t0 > self._timeout_s:
                 break
-            if checker is not None:
-                q_next = self._joint_target(
-                    self._action(e_pos, e_rot, gripper_during), q, T_ee, self._cfg, self._kinematics
-                )
-                pairs = checker.colliding_pairs(q_next, self._gripper_width())
-                if pairs:
-                    return self._blocked(T_target, t0, "during", pairs)
+            q_next = self._joint_target(
+                self._action(e_pos, e_rot, gripper_during), q, T_ee, self._cfg, self._kinematics
+            )
+            pairs = checker.colliding_pairs(q_next, self._gripper_width())
+            if pairs:
+                return self._blocked(T_target, t0, "during", pairs)
             self._send(e_pos, e_rot, gripper_during)
+        duration_s = time.time() - t0
 
         if gripper != self._last_gripper and not should_stop():
             self.hold(gripper, self._gripper_settle_s, should_stop)
         self._last_gripper = gripper
 
         e_pos, e_rot = pose_error(T_target, self._robot.last_eef_pose)
-        return ServoResult(reached, float(np.linalg.norm(e_pos)), float(np.linalg.norm(e_rot)), time.time() - t0)
+        return ServoResult(reached, float(np.linalg.norm(e_pos)), float(np.linalg.norm(e_rot)), duration_s)
 
     def _gripper_width(self) -> float | None:
         width = self._robot.last_gripper_q

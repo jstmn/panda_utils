@@ -20,18 +20,21 @@ README_SETUP.md). Claude models (claude-*) use ANTHROPIC_API_KEY (or an `ant aut
 
 ### Usage:
 python scripts/agent_control.py \
-    --model gpt-6.1-sol \
-    --task-description "pick up the red cube" \
+    --task-description "pickup the red apple and place it in the grey bowl" \
+    --model dream-1 \
     --action-reference-frame ee \
-    --camera_ids zedm \
-    --history_length 1
+    --camera_ids zed2i zedm \
+    --effort medium \
+    --history_length 3
 
-
+    --model gpt-6-astra \
+    --task-description "grasp the red cube and raise it 15 cm above the table" \
+    --camera_ids zed zed2i zedm \
+    --camera_ids zedm zed zed2i \
+    --model gpt-6.1-sol \
+    --action-reference-frame world \
     --camera_ids zed zedm \
 
-# EE frame control, 3 observations of history, confirm each step
-python scripts/agent_control.py --model claude-opus-5-5 --task-description "push the peg upright" \
-    --camera_ids zed2i zedm --action-reference-frame ee --history_length 3 --require-confirmation-before-action
 """
 
 from __future__ import annotations
@@ -50,7 +53,6 @@ import cv2
 import numpy as np
 import openai
 import rclpy
-from deoxys.experimental.motion_utils import reset_joints_to
 from deoxys.franka_interface import FrankaInterface
 from termcolor import cprint
 
@@ -70,6 +72,7 @@ from panda_utils.agent_control.agent import (
     PoseDeltaAgent,
     format_cost,
 )
+from panda_utils.agent_control.video import RunVideoRecorder
 from panda_utils.agent_control.viewer import (
     DEFAULT_VIEWER_ROBOT,
     VIEWER_ROBOTS,
@@ -77,7 +80,11 @@ from panda_utils.agent_control.viewer import (
 )
 from panda_utils.constants import RESET_JOINT_POSITIONS, WORKSPACE_BOUNDS
 from panda_utils.ros2_cameras import CAMERA_LAYOUTS, CameraSubscriber
-from panda_utils.utils import wait_for_deoxys_ready
+from panda_utils.utils import (
+    RobotNotMovingError,
+    reset_joints_verified,
+    wait_for_deoxys_ready,
+)
 
 PROJECT_DIR = Path(__file__).parent.parent
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
@@ -140,8 +147,8 @@ def main() -> int:
         help="output_config.effort; omitted by default, so the model's own default applies",
     )
     parser.add_argument("--max_steps", type=int, default=40)
-    parser.add_argument("--max_translation_cm", type=float, default=5.0, help="per-step translation cap")
-    parser.add_argument("--max_rotation_deg", type=float, default=15.0, help="per-step rotation cap")
+    parser.add_argument("--max_translation_cm", type=float, default=10.0, help="per-step translation cap")
+    parser.add_argument("--max_rotation_deg", type=float, default=20.0, help="per-step rotation cap")
     parser.add_argument(
         "--min_ee_height_cm", type=float, default=1.0, help="lowest end effector z allowed, in the base frame"
     )
@@ -249,8 +256,10 @@ def main() -> int:
 
     viewer.start_live(robot_state, cams.latest_rgb)
     servo = None
+    recorder = None
     exit_code = 0
     run_cost_usd = 0.0  # estimated; steps with an unpriced model add nothing
+    n_actions_executed = 0  # steps where the arm moved
     status = "stopped"
     try:
         if not wait_for_deoxys_ready(robot):
@@ -267,7 +276,7 @@ def main() -> int:
         if not args.no_reset:
             cprint("🔄 Homing...", "yellow")
             viewer.set_status("homing")
-            reset_joints_to(robot, RESET_JOINT_POSITIONS, gripper_open=True)
+            reset_joints_verified(robot, RESET_JOINT_POSITIONS, gripper_open=True)
         servo = EEPoseServo(robot, collision_checker=collision_checker)
         # The first command after a controller switch takes ~1 s; take that hit here rather than mid-step.
         servo.hold(GRIPPER_OPEN if (robot.last_gripper_q or 0.0) > 0.04 else GRIPPER_CLOSED, 1.0)
@@ -276,7 +285,7 @@ def main() -> int:
             """Home the arm and start the model over with an empty observation history (viewer reset button)."""
             cprint("\n🔄 Reset requested from the viewer: homing and clearing the observation history", "yellow")
             viewer.set_status("resetting: homing")
-            reset_joints_to(robot, RESET_JOINT_POSITIONS, gripper_open=True)
+            reset_joints_verified(robot, RESET_JOINT_POSITIONS, gripper_open=True)
             servo.hold(GRIPPER_OPEN, 1.0)  # warm start the joint impedance controller again after the homing move
             agent.history.clear()
             viewer.finish_reset()
@@ -295,11 +304,20 @@ def main() -> int:
             cprint(f"\n── step {step} ── asking {args.model}...", "cyan")
             viewer.set_status(f"step {step}: waiting for {args.model}")
             t0 = time.time()
+            if recorder is None:
+                # The run clock (video overlay, viewer charts) and the video start at the first API call, after homing.
+                viewer.start_clock(t0)
+                recorder = RunVideoRecorder(run_dir / "run.mp4", cams.camera_ids, cams.latest_rgb, t0=t0)
+                recorder.start()
+                cprint(f"🎥 Recording {recorder.path}", "white")
+            recorder.set_step(step)
             reply = agent.act(obs, on_request=viewer.show_request)
             action = reply.action
             latency_s = time.time() - t0
             if reply.cost_usd is not None:
                 run_cost_usd += reply.cost_usd
+            viewer.record_cost(run_cost_usd)
+            recorder.set_cost(run_cost_usd)
             cprint(f"   {action.reasoning}", "white")
             cprint(
                 f"   d=({action.dx_cm:+.1f}, {action.dy_cm:+.1f}, {action.dz_cm:+.1f}) cm  "
@@ -387,6 +405,9 @@ def main() -> int:
                     should_stop=viewer.reset_requested.is_set,
                 )
                 record["servo"] = vars(result)
+                if result.blocked not in ("current", "predicted"):  # those were refused before the arm moved
+                    n_actions_executed += 1
+                    viewer.record_actions(n_actions_executed)
                 pairs_text = ", ".join(f"{a} / {b}" for a, b in result.collision_pairs)
                 cprint(
                     f"   ⏱  {'reached the target' if result.reached else 'stopped'} after {result.duration_s:.2f} s, "
@@ -424,6 +445,10 @@ def main() -> int:
     except KeyboardInterrupt:
         cprint("\n⏹️  Interrupted", "yellow")
         status = "interrupted"
+    except RobotNotMovingError as exc:
+        cprint(f"❌ {exc}", "red")
+        status = f"robot not moving: {exc}"
+        exit_code = 1
     except AgentRefusalError as exc:
         cprint(f"❌ {exc}", "red")
         status = f"error: {exc}"
@@ -435,6 +460,9 @@ def main() -> int:
         exit_code = 1
     finally:
         running = False
+        if recorder is not None:
+            recorder.stop()  # before the camera node goes away; finalizes the file on every exit path
+            cprint(f"🎥 Video saved to {recorder.path}", "white")
         if servo is not None:
             try:
                 servo.terminate()
