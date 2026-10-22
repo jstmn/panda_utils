@@ -84,7 +84,7 @@ from deoxys.utils.input_utils import input2action
 from deoxys.utils.io_devices import SpaceMouse
 
 from panda_utils.ros2_cameras import (
-    DEFAULT_LAYOUT, LAYOUTS, decode_color, decode_depth, make_qos, parse_camera_spec,
+    DEFAULT_LAYOUT, LAYOUTS, decode_color, decode_depth, make_qos, parse_camera_spec, stamp_to_ns,
 )
 
 # panda_utils.constants pulls in ROS 1; fall back to the measured values for this rig's
@@ -133,10 +133,6 @@ GRIPPER_JOINT_NAMES = ["panda_finger_joint1", "panda_finger_joint2"]
 JOINT_PUBLISH_HZ = 50.0
 MONTAGE_EVERY = 10  # save the preview montage PNG for every Nth sample only
 TELEOP_HZ = 50.0
-
-
-def stamp_to_ns(msg: Image) -> int:
-    return msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
 
 
 def ns_to_local_str(ns: int) -> str:

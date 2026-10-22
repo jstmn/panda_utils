@@ -82,6 +82,11 @@ def make_qos(best_effort: bool) -> QoSProfile:
     )
 
 
+def stamp_to_ns(msg: Image) -> int:
+    """Header stamp as int64 ns. ZED and RealSense stamp with the host wall clock (ns since the Unix epoch)."""
+    return msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+
+
 def decode_color(msg: Image) -> np.ndarray:
     """ZED colour Image -> HxWx3 uint8 RGB."""
     buf = np.frombuffer(msg.data, dtype=np.uint8)
