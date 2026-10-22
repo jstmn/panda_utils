@@ -49,6 +49,15 @@ LAYOUTS = {
 DEFAULT_LAYOUT = "zed"
 
 
+# Every camera on this rig, by the name it is launched with, and its topic layout.
+CAMERA_LAYOUTS = {
+    "zed": "zed",
+    "zed2i": "zed",
+    "zedm": "zed",
+    "d435": "realsense",
+}
+
+
 def parse_camera_spec(spec: str) -> tuple[str, str]:
     """'zed2i' -> ('zed2i', 'zed');  'd435=realsense' -> ('d435', 'realsense')."""
     cam_id, _, layout = spec.partition("=")

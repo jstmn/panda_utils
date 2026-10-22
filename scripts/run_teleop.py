@@ -28,11 +28,11 @@ from termcolor import cprint
 
 # panda_utils.constants pulls in ROS 1 (rospy via panda_utils.utils). Same fallback as
 # scripts/log_demonstration.py. Keep in sync with panda_utils/constants.py.
-try:
-    from panda_utils.constants import SPACE_MOUSE_PRODUCT_ID, SPACE_MOUSE_VENDOR_ID
-except Exception:  # noqa: BLE001 - any import error means the ROS 1 chain is unavailable
-    SPACE_MOUSE_VENDOR_ID = 1133  # 0x046D
-    SPACE_MOUSE_PRODUCT_ID = 50726  # 0xC626
+# try:
+from panda_utils.constants import SPACE_MOUSE_PRODUCT_ID, SPACE_MOUSE_VENDOR_ID
+# except Exception:  # noqa: BLE001 - any import error means the ROS 1 chain is unavailable
+#     SPACE_MOUSE_VENDOR_ID = 1133  # 0x046D
+#     SPACE_MOUSE_PRODUCT_ID = 50726  # 0xC626
 
 JOINT_NAMES = [
     "panda_joint1",
@@ -153,6 +153,11 @@ def main() -> None:
                 device=device,
                 controller_type=controller_type,
             )
+            # input2action returns None while the SpaceMouse's right (reset) button is held. Passing that on gives
+            # control() a 0-d array; a reset request is not a motion command, so skip the tick.
+            if action is None:
+                time.sleep(1.0 / PUBLISH_HZ)
+                continue
             robot_interface.control(
                 controller_type=controller_type,
                 action=action,

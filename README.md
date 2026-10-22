@@ -22,10 +22,9 @@ echo "DEOXYS_DIR='/PATH/TO/deoxys_control'" >> ~/.bashrc; source ~/.bashrc
 echo "PYTHONPATH='$PYTHONPATH:$DEOXYS_DIR/deoxys/'" >> ~/.bashrc; source ~/.bashrc
 echo "ROS_WS='/PATH/TO/ROS2_WS'" >> ~/.bashrc; source ~/.bashrc
 
-# Create and activate a conda environment called `panda`:
+# Create the 'panda_utils' conda env:
 conda create -n panda_utils python=3.10 -y
 conda activate panda_utils
-pip install matplotlib numpy open3d opencv-python termcolor h5py matplotlib rospkg ruff black
 git clone https://github.com/jstmn/Jrl2 thirdparty/Jrl2
 git clone https://github.com/jstmn/Jrl thirdparty/Jrl
 pip install -e thirdparty/Jrl2
@@ -86,18 +85,19 @@ Also written per demo: `<stem>_timing.json`, `<cam>_camera_info_{color,depth}.js
 
 ## Agent control
 
-`scripts/agent_control.py` lets a Claude model drive the end effector from camera images. Each step it sends the
+`scripts/agent_control.py` lets a Claude or OpenAI model drive the end effector from camera images. Each step it sends the
 last `--history_length` observations, gets back one structured pose delta (cm / deg, plus gripper open/closed), caps
-it per step, clamps it to `WORKSPACE_BOUNDS`, and servos there with deoxys `OSC_POSE`. There is no collision checking,
-and every step waits for ENTER unless `--auto` is passed. Library code is in `src/panda_utils/agent_control/`.
+it per step, clamps it to `WORKSPACE_BOUNDS`, and tracks the target with `OSC_POSE_PRECISE` from our deoxys fork (per-tick
+Levenberg-Marquardt IK steps through `JOINT_IMPEDANCE`; deoxys `OSC_POSE` barely moves the arm for small goals). There is no collision checking.
+Steps execute immediately unless `--require-confirmation-before-action` is passed. Library code is in
+`src/panda_utils/agent_control/`.
 
 ```bash
-# deoxys env + ROS 2, cameras running as above. Needs ANTHROPIC_API_KEY (or `ant auth login`).
-python scripts/agent_control.py --task "pick up the red cube" --camera_ids zed zed2i zedm \
-  --model claude-opus-5-5 --history_length 3 --frame ee \
-  --draw_ee_frame --extrinsics zed2i=/path/to/extrinsics.yaml
+# Cameras running as above. Claude models need ANTHROPIC_API_KEY (or `ant auth login`); gpt-* / o<N>* models need OPENAI_API_KEY.
+python scripts/agent_control.py --model claude-opus-5-5 --task-description "pick up the red cube" \
+  --camera_ids zed zed2i zedm --history_length 3 --action-reference-frame ee --require-confirmation-before-action
 ```
 
-`--frame world` expresses deltas in the robot base frame, `--frame ee` in the gripper's frame. `--draw_ee_frame` draws
-the EE axes (x/y/z = red/green/blue) on cameras that have `--extrinsics` (the `r2st_handeye.py` YAML schema). Each
-run logs the images sent, the model's actions and token usage to `logs/agent_control/`.
+`--action-reference-frame world` expresses deltas in the robot base frame, `ee` in the gripper's frame. Each run logs
+the images sent, the model's actions and token usage to one timestamped folder,
+`logs/agent_control/<task>__<MM-DD-YYYY__HH-MM-SS>/` (`step_000__<camera>.jpg`, `step_000.json`, ...).

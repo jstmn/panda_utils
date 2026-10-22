@@ -1,25 +1,55 @@
-"""Claude-driven end effector control: images in, one structured end effector pose delta out per call."""
+"""Model-driven end effector control: images in, one structured end effector pose delta out per call.
+
+Claude models (claude-*) are called through the Anthropic SDK, OpenAI models (gpt-*, o<N>*, chatgpt-*) through the
+OpenAI SDK. Both get the same prompt and observation history and return the same EEPoseDelta schema.
+"""
 
 from __future__ import annotations
 
 import base64
 import json
+import os
+import re
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import anthropic
 import cv2
 import numpy as np
-from anthropic.types.beta.parsed_beta_message import ParsedBetaMessage
+import openai
 
-from panda_utils.agent_control.geometry import pose_to_text
-from panda_utils.agent_control.schema import EEPoseDelta
+from panda_utils.agent_control.actions import EEPoseDelta, pose_to_text
+
+ANTHROPIC = "anthropic"
+OPENAI = "openai"
+OPENAI_MODEL_PATTERN = re.compile(r"^(gpt-|chatgpt-|o\d)")
+OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
 
 # Models that accept server-side refusal fallbacks in the "default" form on the Claude API. A declined request is
 # re-run on Anthropic's recommended fallback model inside the same call rather than coming back as a refusal.
 SERVER_FALLBACK_MODELS = {"claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"}
 SERVER_FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
+MAX_OUTPUT_TOKENS = 16000
+
+# USD per 1M tokens: (input, output, cache read, cache write). Neither API returns a cost, so it is estimated from the
+# token counts. Prices change: check these before trusting totals.
+#   Claude: Anthropic's model table as of 2026-10-06. Cache writes at 1.25x input (5 minute TTL); Haiku 5.5's cache
+#   read price assumed at 0.1x input.
+#   OpenAI: developers.openai.com/api/docs/pricing as of 2026-10-21, standard tier; cache writes at the 30 minute rate.
+# Haiku 5.5 costs more for prompts over 100K tokens, and OpenAI's long context rate starts above 272K; prompts here are
+# far smaller than either.
+PRICES_PER_MTOK = {
+    "claude-fable-5-1": (10.00, 50.00, 0.25, 12.50),
+    "claude-opus-5-5": (4.00, 20.00, 0.20, 5.00),
+    "claude-sonnet-5-5": (2.00, 10.00, 0.20, 2.50),
+    "claude-haiku-5-5": (0.10, 0.50, 0.01, 0.125),
+    "gpt-6.1-sol": (2.00, 10.00, 0.10, 2.50),
+    "gpt-6-sol": (2.00, 10.00, 0.20, 2.50),
+    "gpt-6-astra": (10.00, 50.00, 1.00, 12.50),
+    "gpt-6-luna": (0.10, 0.50, 0.01, 0.125),
+}
 JPEG_QUALITY = 90
 
 FRAME_DESCRIPTIONS = {
@@ -41,11 +71,58 @@ class AgentRefusalError(RuntimeError):
 
 @dataclass
 class Observation:
-    images: dict[str, np.ndarray]  # camera id -> RGB, already annotated if the EE frame is drawn
+    images: dict[str, np.ndarray]  # camera id -> RGB
     T_base_ee: np.ndarray  # [4, 4] end effector pose in the robot base frame
     gripper_width_m: float | None
     action: EEPoseDelta | None = None  # the step taken after this observation, as executed (after clamping)
     outcome: str = ""  # what happened when the step was executed, e.g. "target clamped to the workspace"
+
+
+@dataclass
+class ModelReply:
+    """One call's result, the same shape for every provider."""
+
+    action: EEPoseDelta
+    model: str  # as reported by the API, which may differ from the requested one (e.g. after a fallback)
+    request_id: str | None
+    input_tokens: int  # all input, including cache reads and writes
+    output_tokens: int  # including any reasoning / thinking tokens
+    cache_read_tokens: int
+    cache_write_tokens: int
+    usage: dict  # the provider's raw usage object
+    cost_usd: float | None  # estimated from PRICES_PER_MTOK; None if the model has no entry
+
+
+def format_cost(cost_usd: float | None) -> str:
+    return "cost unknown (model not in PRICES_PER_MTOK)" if cost_usd is None else f"${cost_usd:.4f}"
+
+
+def estimate_cost_usd(
+    model: str, input_tokens: int, output_tokens: int, cache_read_tokens: int, cache_write_tokens: int
+) -> float | None:
+    """Estimated USD for one call. `model` may be a dated snapshot of a priced model (OpenAI reports e.g.
+    gpt-6.1-sol-<date>), so the longest PRICES_PER_MTOK name it starts with is used."""
+    matches = [name for name in PRICES_PER_MTOK if model.startswith(name)]
+    if not matches:
+        return None
+    price_in, price_out, price_cache_read, price_cache_write = PRICES_PER_MTOK[max(matches, key=len)]
+    uncached = input_tokens - cache_read_tokens - cache_write_tokens
+    return (
+        uncached * price_in
+        + output_tokens * price_out
+        + cache_read_tokens * price_cache_read
+        + cache_write_tokens * price_cache_write
+    ) / 1e6
+
+
+def provider_for_model(model: str) -> str:
+    if model.startswith("claude-"):
+        return ANTHROPIC
+    if OPENAI_MODEL_PATTERN.match(model):
+        return OPENAI
+    raise ValueError(
+        f"Unrecognised model {model!r}: expected a Claude model (claude-*) or an OpenAI model (gpt-*, o<N>*)"
+    )
 
 
 def build_system_prompt(
@@ -54,7 +131,6 @@ def build_system_prompt(
     max_translation_cm: float,
     max_rotation_deg: float,
     history_length: int,
-    draw_ee_frame: bool,
 ) -> str:
     lines = [
         (
@@ -77,11 +153,6 @@ def build_system_prompt(
             f"You are shown up to the {history_length} most recent observations, oldest first, each followed by the "
             "step that was taken after it. Use them to judge whether previous steps had the effect you intended."
         )
-    if draw_ee_frame:
-        lines.append(
-            "The gripper's end effector frame is drawn on the images: red = x, green = y, blue = z (pointing toward "
-            "the fingertips). Use it to relate image directions to the axes you command."
-        )
     lines.append("Set task_complete to true only once the images show the task is done; that step is not executed.")
     return "\n".join(lines)
 
@@ -93,7 +164,7 @@ def encode_jpeg_b64(image_rgb: np.ndarray) -> str:
 
 
 class PoseDeltaAgent:
-    """Asks a Claude model for the next end effector pose delta given the last `history_length` observations."""
+    """Asks a model for the next end effector pose delta given the last `history_length` observations."""
 
     def __init__(
         self,
@@ -103,50 +174,69 @@ class PoseDeltaAgent:
         history_length: int,
         max_translation_cm: float,
         max_rotation_deg: float,
-        draw_ee_frame: bool,
         effort: str | None = None,
-        client: anthropic.Anthropic | None = None,
+        client: anthropic.Anthropic | openai.OpenAI | None = None,
     ):
+        """Raises ValueError for an unrecognised model, or an OpenAI model without OPENAI_API_KEY set."""
         assert history_length >= 1, f"history_length must be >= 1, got {history_length}"
         self.model = model
+        self.provider = provider_for_model(model)
         self.effort = effort
         self.history: deque[Observation] = deque(maxlen=history_length)
-        self.system_prompt = build_system_prompt(
-            task, frame, max_translation_cm, max_rotation_deg, history_length, draw_ee_frame
-        )
-        self._client = client or anthropic.Anthropic()
+        self.system_prompt = build_system_prompt(task, frame, max_translation_cm, max_rotation_deg, history_length)
+        if self.provider == OPENAI and client is None and not os.environ.get(OPENAI_API_KEY_ENV):
+            raise ValueError(f"{model} is an OpenAI model: set {OPENAI_API_KEY_ENV} in the shell environment")
+        if client is None:
+            client = openai.OpenAI() if self.provider == OPENAI else anthropic.Anthropic()
+        self._client = client
 
-    def _observation_blocks(self, obs: Observation, label: str) -> list[dict]:
+    def _observation_parts(self, obs: Observation, label: str) -> list[tuple[str, str]]:
+        """("text", str) / ("image", base64 jpeg) parts, converted to each provider's block format at call time."""
         gripper = "unknown" if obs.gripper_width_m is None else f"{obs.gripper_width_m * 100:.1f} cm open"
-        blocks = [{"type": "text", "text": f"{label}\nGripper: {pose_to_text(obs.T_base_ee)}; width {gripper}."}]
+        parts = [("text", f"{label}\nGripper: {pose_to_text(obs.T_base_ee)}; width {gripper}.")]
         for cam_id, image in obs.images.items():
-            blocks.append({"type": "text", "text": f"Camera '{cam_id}':"})
-            blocks.append(
-                {
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": "image/jpeg", "data": encode_jpeg_b64(image)},
-                }
-            )
+            parts += [("text", f"Camera '{cam_id}':"), ("image", encode_jpeg_b64(image))]
         if obs.action is not None:
             step = json.dumps(obs.action.model_dump())
-            blocks.append({"type": "text", "text": f"Step taken after this observation: {step}. {obs.outcome}".strip()})
-        return blocks
+            parts.append(("text", f"Step taken after this observation: {step}. {obs.outcome}".strip()))
+        return parts
 
-    def build_content(self) -> list[dict]:
-        content = []
+    def build_parts(self) -> list[tuple[str, str]]:
+        parts = []
         n = len(self.history)
         for i, obs in enumerate(self.history):
             label = "Current observation:" if i == n - 1 else f"Observation from {n - 1 - i} step(s) ago:"
-            content += self._observation_blocks(obs, label)
-        content.append({"type": "text", "text": "Choose the next step."})
-        return content
+            parts += self._observation_parts(obs, label)
+        parts.append(("text", "Choose the next step."))
+        return parts
 
-    def act(self, obs: Observation) -> tuple[EEPoseDelta, ParsedBetaMessage[EEPoseDelta]]:
-        """Add `obs` to the history and return the model's next step along with the raw response, for logging.
+    def act(
+        self,
+        obs: Observation,
+        on_request: Callable[[list[Observation], list[tuple[str, str]]], None] | None = None,
+    ) -> ModelReply:
+        """Add `obs` to the history and return the model's next step.
 
+        `on_request(history, parts)` is called with exactly what is about to be sent, before the (slow) API call.
         Fill in `obs.action` / `obs.outcome` with what was actually executed so the next call reports it.
         """
         self.history.append(obs)
+        parts = self.build_parts()
+        if on_request is not None:
+            on_request(list(self.history), parts)
+        if self.provider == OPENAI:
+            return self._act_openai(parts)
+        return self._act_anthropic(parts)
+
+    def _act_anthropic(self, parts: list[tuple[str, str]]) -> ModelReply:
+        content = [
+            (
+                {"type": "text", "text": value}
+                if kind == "text"
+                else {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": value}}
+            )
+            for kind, value in parts
+        ]
         kwargs = {}
         if self.effort is not None:
             kwargs["output_config"] = {"effort": self.effort}
@@ -155,9 +245,9 @@ class PoseDeltaAgent:
             kwargs["fallbacks"] = "default"
         response = self._client.beta.messages.parse(
             model=self.model,
-            max_tokens=16000,
+            max_tokens=MAX_OUTPUT_TOKENS,
             system=self.system_prompt,
-            messages=[{"role": "user", "content": self.build_content()}],
+            messages=[{"role": "user", "content": content}],
             output_format=EEPoseDelta,
             **kwargs,
         )
@@ -165,4 +255,70 @@ class PoseDeltaAgent:
             raise AgentRefusalError(f"{self.model} declined the request: {response.stop_details}")
         if response.parsed_output is None:
             raise RuntimeError(f"No structured output from {self.model} (stop_reason={response.stop_reason})")
-        return response.parsed_output, response
+        # Anthropic reports cache reads and writes separately from input_tokens. Priced at the model that answered,
+        # which after a server-side fallback is the fallback model.
+        usage = response.usage
+        cache_read = usage.cache_read_input_tokens or 0
+        cache_write = usage.cache_creation_input_tokens or 0
+        input_tokens = usage.input_tokens + cache_read + cache_write
+        return ModelReply(
+            action=response.parsed_output,
+            model=response.model,
+            request_id=response._request_id,
+            input_tokens=input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+            usage=usage.model_dump(),
+            cost_usd=estimate_cost_usd(response.model, input_tokens, usage.output_tokens, cache_read, cache_write),
+        )
+
+    def _act_openai(self, parts: list[tuple[str, str]]) -> ModelReply:
+        content = [
+            (
+                {"type": "input_text", "text": value}
+                if kind == "text"
+                else {"type": "input_image", "image_url": f"data:image/jpeg;base64,{value}", "detail": "auto"}
+            )
+            for kind, value in parts
+        ]
+        kwargs = {}
+        if self.effort is not None:
+            kwargs["reasoning"] = {"effort": self.effort}
+        response = self._client.responses.parse(
+            model=self.model,
+            instructions=self.system_prompt,
+            input=[{"role": "user", "content": content}],
+            text_format=EEPoseDelta,
+            max_output_tokens=MAX_OUTPUT_TOKENS,
+            **kwargs,
+        )
+        refusals = [
+            block.refusal
+            for item in response.output
+            if item.type == "message"
+            for block in item.content
+            if block.type == "refusal"
+        ]
+        if refusals:
+            raise AgentRefusalError(f"{self.model} declined the request: {' '.join(refusals)}")
+        if response.output_parsed is None:
+            raise RuntimeError(f"No structured output from {self.model} (status={response.status})")
+        # OpenAI's input_tokens already include cached tokens and cache writes.
+        usage = response.usage
+        details = usage.input_tokens_details
+        cache_read = (details.cached_tokens or 0) if details is not None else 0
+        cache_write = (getattr(details, "cache_write_tokens", None) or 0) if details is not None else 0
+        return ModelReply(
+            action=response.output_parsed,
+            model=response.model,
+            request_id=getattr(response, "_request_id", None),
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+            usage=usage.model_dump(),
+            cost_usd=estimate_cost_usd(
+                response.model, usage.input_tokens, usage.output_tokens, cache_read, cache_write
+            ),
+        )

@@ -1,9 +1,9 @@
 """Agent (LLM) control of the Panda: camera images in, structured end effector pose deltas out.
 
-Modules are imported individually so the light ones (schema, geometry) do not pull in rclpy or deoxys:
-    schema    EEPoseDelta, the structured action the model returns
-    geometry  applying deltas in the world or end effector frame, clamping, drawing the EE frame on images
-    agent     PoseDeltaAgent, the Claude call and observation history
-    servo     EEPoseServo, closed-loop OSC_POSE tracking of a target pose via deoxys
+Modules are imported individually; only the script pulls in rclpy, and only EEPoseServo pulls in deoxys:
+    actions   EEPoseDelta (the structured action the model returns), applying it in the world or end effector
+              frame with clamping, and EEPoseServo (closed-loop pose tracking on OSC_POSE_PRECISE, our deoxys fork)
+    agent     PoseDeltaAgent, the model call and observation history
+    viewer    AgentViewer, the browser viewer (viser)
 Cameras come from panda_utils.ros2_cameras.
 """

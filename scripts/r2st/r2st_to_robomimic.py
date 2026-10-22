@@ -136,6 +136,12 @@ def _fk_series(robot, qpos: np.ndarray, tcp_link: str) -> tuple[np.ndarray, np.n
 
 def build_actions(eef_pos: np.ndarray, eef_rot: np.ndarray, closed: np.ndarray) -> np.ndarray:
     """(T,7) OSC_POSE-style deltas: [dpos(3) | drot axis-angle(3) | grasp(1)]."""
+    assert False, (
+        "drot below is computed as R[t]^T @ R[t+1], a rotation in the end effector frame (eef_rot is R_base_tcp). "
+        "deoxys OSC_POSE applies rotation deltas in the robot base frame (osc_impedance.cpp: R_goal = R_delta @ "
+        "R_current), which needs R[t+1] @ R[t]^T. Decide which convention the policy and controller should use, "
+        "fix drot accordingly, and regenerate any datasets built with this script before removing this assert."
+    )
     T = len(eef_pos)
     a = np.zeros((T, 7), dtype=np.float64)
     a[:-1, :3] = eef_pos[1:] - eef_pos[:-1]
