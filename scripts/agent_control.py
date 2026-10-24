@@ -20,14 +20,15 @@ README_SETUP.md). Claude models (claude-*) use ANTHROPIC_API_KEY (or an `ant aut
 
 ### Usage:
 python scripts/agent_control.py \
-    --task-description "pickup the red apple and place it in the grey bowl" \
-    --model dream-1 \
+    --task-description "pickup the grey cube and place it ontop of the red and blue peg" \
+    --model gpt-6-astra \
     --action-reference-frame ee \
     --camera_ids zed2i zedm \
     --effort medium \
     --history_length 3
 
-    --model gpt-6-astra \
+    --task-description "pickup the red apple and place it in the grey bowl" \
+    --model dream-1 \
     --task-description "grasp the red cube and raise it 15 cm above the table" \
     --camera_ids zed zed2i zedm \
     --camera_ids zedm zed zed2i \

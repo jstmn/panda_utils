@@ -55,7 +55,7 @@ CAMS="zed zed2i zedm" bash ~/Desktop/ros2_ws/zed_tools/launch_all.sh
 
 # Terminal 2 - Teleoperation + log demonstrations [Option 1]
 python scripts/log_demonstration.py \
-  --output_dir /home/res1/Desktop/real2sim-toolkit/data/Oct20_2026_datacollect --description PickCube \
+  --output_dir /home/res1/Desktop/real2sim-toolkit/data/Oct22_2026_datacollect --description Calibration \
   --recording_rate_hz 20.0 --camera_ids zed zed2i zedm --zed_resolution VGA
 
 # Terminal 2 - Teleoperation [Option 2]
