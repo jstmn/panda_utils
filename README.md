@@ -55,7 +55,7 @@ CAMS="zed zed2i zedm" bash ~/Desktop/ros2_ws/zed_tools/launch_all.sh
 
 # Terminal 2 - Teleoperation + log demonstrations [Option 1]
 python scripts/log_demonstration.py \
-  --output_dir /home/res1/Desktop/real2sim-toolkit/data/Oct26_2026_datacollect --description PickCube \
+  --output_dir /home/res1/Desktop/real2sim-toolkit/data/Oct26_2026_datacollect --description PickCube_6x6x6cm \
   --recording_rate_hz 20.0 --camera_ids zed zed2i zedm --zed_resolution VGA --show-camera-feed
 
 # Terminal 2 - Teleoperation [Option 2]
@@ -82,7 +82,7 @@ its stereo pair. All datasets share one frame index; `*` marks extras beyond the
 `*_timestamp_ms` are host wall clock, Unix-epoch ms. Root attrs: `zed_resolution`, `timezone`, `start_time_local`,
 `end_time_local`, `duration_s`. Without depth (`--no-depth`, `--no-depth-cameras`) a camera fails the noisy-depth
 validator; a RealSense camera (no right eye) fails the stereo one. Also written per demo: `<stem>_timing.json`,
-`<cam>_camera_info_{color,depth,right}.json` (rectified intrinsics; the right one's `P[3] = -fx * baseline`), and
+`<cam>_camera_info.json` (rectified intrinsics keyed `left`, `depth_noisy`, `right`; `right.p[3] = -fx * baseline`), and
 `images/` (a preview every 10th sample).
 
 

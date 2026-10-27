@@ -608,17 +608,18 @@ class ZedDataCollector(Node):
                 line += f", age {st['mean_age_ms']}/{st['max_age_ms']} ms (mean/max)"
             cprint(line, "white")
 
+        # One <cam>_camera_info.json per camera, keyed like the HDF5 streams.
         for cam_id in self._camera_ids:
-            kinds = [("color", "color_camera_info")]
+            kinds = [("left", "color_camera_info")]
             if cam_id in self._depth_cams:
-                kinds.append(("depth", "depth_camera_info"))
+                kinds.append(("depth_noisy", "depth_camera_info"))
             if cam_id in self._stereo_cams:
                 # right P[3] = -fx * baseline (ROS stereo convention), so the baseline is in here
                 kinds.append(("right", "right_camera_info"))
-            for kind, key in kinds:
-                if self.camera_data[cam_id][key] is not None:
-                    with open(self.output_dir / f"{cam_id}_camera_info_{kind}.json", "w") as fh:
-                        json.dump(self.camera_data[cam_id][key], fh, indent=2)
+            infos = {kind: self.camera_data[cam_id][key] for kind, key in kinds
+                     if self.camera_data[cam_id][key] is not None}
+            with open(self.output_dir / f"{cam_id}_camera_info.json", "w") as fh:
+                json.dump(infos, fh, indent=2)
 
         # Sample montages, every MONTAGE_EVERY-th timestep, for eyeballing the demo afterwards.
         # Filenames keep the sample index, so a PNG still maps to its row in the HDF5.

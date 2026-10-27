@@ -10,7 +10,7 @@ WHY THIS EXISTS
                                      joint_states_dq           (T, 9)   float64
                                      <cam>__color_image        (T,H,W,3) uint8   RGB
                                      <cam>__depth_image        (T,H,W)   uint16  mm
-                                   <cam>_camera_info_color.json          (sibling file)
+                                   <cam>_camera_info.json  ["left"]      (sibling file)
 
         real2sim-toolkit       ->  merged_sensor_data.h5
                                      obs/qpos                            (T, D)
@@ -74,12 +74,11 @@ DEPTH_SUFFIX = "__depth_image"
 
 def emit_intrinsics(demo_dir: Path, camera: str, model_id: str) -> int:
     """Print a constants.py block from the logger's camera_info JSON."""
-    info_path = demo_dir / f"{camera}_camera_info_color.json"
+    info_path = demo_dir / f"{camera}_camera_info.json"
     if not info_path.is_file():
-        print(f"ERROR: {info_path} not found. The logger writes it next to the traj_*.h5 files;\n"
-              f"       recordings made with --no-depth still write the colour one.", file=sys.stderr)
+        print(f"ERROR: {info_path} not found. The logger writes it next to the traj_*.h5 files.", file=sys.stderr)
         return 1
-    info = json.loads(info_path.read_text())
+    info = json.loads(info_path.read_text())["left"]
     # ROS2 sensor_msgs/CameraInfo names the 3x3 matrix 'k'; ROS1 named it 'K'. The logger
     # dumps whatever the message carried, so accept both.
     k = info.get("k", info.get("K"))
