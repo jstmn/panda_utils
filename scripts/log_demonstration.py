@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import select
 import sys
 import threading
@@ -186,22 +187,32 @@ def camera_info_to_dict(msg: CameraInfo) -> dict:
     }
 
 
-def save_combined_rgbs(images: list[np.ndarray], camera_ids: list[str], out_path: Path) -> None:
-    """Write a labelled side-by-side montage of one timestep's RGB frames.
+FEED_WINDOW = "camera feed"
 
-    Local reimplementation of panda_utils.utils.save_combined_rgbs (that module imports rospy).
-    """
+
+def combined_bgr(images: list[np.ndarray], camera_ids: list[str]) -> np.ndarray | None:
+    """Labelled side-by-side BGR montage. `images` are RGB, one per camera."""
     if not images:
-        return
+        return None
     target_h = min(img.shape[0] for img in images)
     panels = []
     for img, cam_id in zip(images, camera_ids):
         scale = target_h / img.shape[0]
         panel = cv2.resize(img, (int(img.shape[1] * scale), target_h))
-        panel = cv2.cvtColor(panel, cv2.COLOR_RGB2BGR)  # cv2.imwrite expects BGR
+        panel = cv2.cvtColor(panel, cv2.COLOR_RGB2BGR)
         cv2.putText(panel, cam_id, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2, cv2.LINE_AA)
         panels.append(panel)
-    cv2.imwrite(str(out_path), np.hstack(panels))
+    return np.hstack(panels)
+
+
+def save_combined_rgbs(images: list[np.ndarray], camera_ids: list[str], out_path: Path) -> None:
+    """Write a labelled side-by-side montage of one timestep's RGB frames.
+
+    Local reimplementation of panda_utils.utils.save_combined_rgbs (that module imports rospy).
+    """
+    montage = combined_bgr(images, camera_ids)
+    if montage is not None:
+        cv2.imwrite(str(out_path), montage)
 
 
 class ZedDataCollector(Node):
@@ -431,6 +442,21 @@ class ZedDataCollector(Node):
 
         return list(frames), True
 
+    def show_camera_feed(self) -> None:
+        """Open (or refresh) one window with every camera's latest RGB frame side by side."""
+        images, ids = [], []
+        for cam_id in self._camera_ids:
+            latest = self.camera_data[cam_id]["_latest_color"]
+            if latest is None:
+                continue
+            images.append(latest[1])
+            ids.append(cam_id)
+        montage = combined_bgr(images, ids)
+        if montage is None:
+            return
+        cv2.imshow(FEED_WINDOW, montage)
+        cv2.waitKey(1)
+
     # -- saving ------------------------------------------------------------
 
     def save(self, traj_name: str) -> None:
@@ -482,6 +508,7 @@ class ZedDataCollector(Node):
                            f"RANGE: {gripper_q.max() - gripper_q.min()}", "red")
                     cprint("If the gripper was moving, restart the franka via https://172.16.0.2/desk/", "red")
 
+            cprint("   compressing camera frames...", "white")
             for cam_id in self._camera_ids:
                 data = self.camera_data[cam_id]
                 if len(data["color_images"]) == 0:
@@ -584,6 +611,22 @@ def joint_publish_thread_target(node: Node, robot: FrankaInterface, has_gripper:
         pub.publish(msg)
 
 
+def hold_position(robot: FrankaInterface) -> None:
+    """Zero-delta termination. The NUC otherwise keeps interpolating the last teleop goal."""
+    gripper = float(robot.last_gripper_action)
+    if gripper == 0.0:
+        gripper = -1.0  # untouched; 0 would command a close
+    try:
+        robot.control(
+            controller_type=CONTROLLER_TYPE,
+            action=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, gripper],
+            controller_cfg=get_default_controller_config(controller_type=CONTROLLER_TYPE),
+            termination=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - exiting must not raise
+        cprint(f"Could not hold the arm on exit: {exc}", "yellow")
+
+
 def teleop_control_thread_target(robot: FrankaInterface, device: SpaceMouse,
                                  should_continue: Callable[[], bool],
                                  should_run: Callable[[], bool]) -> None:
@@ -621,6 +664,57 @@ def teleop_control_thread_target(robot: FrankaInterface, device: SpaceMouse,
                 break
         else:
             n_errors = 0
+
+
+def call_while_refreshing(fn: Callable[[], None], refresh: Callable[[], None] | None) -> None:
+    """Run `fn` here, or on a worker while `refresh` keeps the camera window alive.
+
+    save() gzip-compresses every frame on the caller. Doing that on the OpenCV thread
+    stops the Qt window from processing events, the desktop treats it as not responding,
+    and Force Quit delivers SIGKILL — which leaves a half-written HDF5. The worker does
+    the write; this thread only calls imshow / waitKey.
+    """
+    if refresh is None:
+        fn()
+        return
+    errors: list[Exception] = []
+
+    def _run() -> None:
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001 - re-raised on the GUI thread
+            errors.append(exc)
+
+    worker = threading.Thread(target=_run, name="save-demo")
+    worker.start()
+    try:
+        while worker.is_alive():
+            refresh()
+            worker.join(0.03)
+    finally:
+        worker.join()
+    if errors:
+        raise errors[0]
+
+
+def read_line(prompt: str, refresh: Callable[[], None] | None = None, poll_s: float = 0.03) -> str:
+    """Read one stdin line. With `refresh`, keep calling it until Enter so a window stays live.
+
+    Canonical-mode stdin only becomes readable once Enter is pressed, so this still waits for
+    a full line; it just does not block inside input(), which would freeze cv2.imshow.
+    """
+    if refresh is None:
+        return input(prompt)
+    print(prompt, end="", flush=True)
+    chars: list[str] = []
+    while True:
+        refresh()
+        if select.select([sys.stdin], [], [], poll_s)[0] != [sys.stdin]:
+            continue
+        ch = sys.stdin.read(1)
+        if ch in ("\n", ""):
+            return "".join(chars)
+        chars.append(ch)
 
 
 def list_topics() -> int:
@@ -679,6 +773,8 @@ def main() -> int:
     parser.add_argument("--qos-best-effort", action="store_true",
                         help="use BEST_EFFORT QoS if topics exist but no frames arrive")
     parser.add_argument("--list-topics", action="store_true", help="list live topics and exit")
+    parser.add_argument("--show-camera-feed", action="store_true",
+                        help="open one window with every camera's latest RGB frame joined side by side")
     args = parser.parse_args()
 
     if args.list_topics:
@@ -731,6 +827,8 @@ def main() -> int:
         cprint(f"⚠️  No depth for {depthless}: real2sim-toolkit requires depth for every camera, so these "
                "obs/sensor_data groups will fail r2st.utils.validate_merged_camera_group.", "yellow")
     cprint(f"Gripper  : {'enabled' if has_gripper else 'DISABLED (--no-gripper)'}", "white")
+    if args.show_camera_feed:
+        cprint(f"Feed     : live window '{FEED_WINDOW}'", "white")
     cprint("=" * 60 + "\n", "cyan")
 
     rclpy.init(args=None)
@@ -785,6 +883,7 @@ def main() -> int:
     demo_index = 0
     period = 1.0 / args.recording_rate_hz
     exit_code = 0
+    refresh = collector.show_camera_feed if args.show_camera_feed else None
 
     try:
         while rclpy.ok():
@@ -799,11 +898,13 @@ def main() -> int:
                 reset_joints_to(robot_interface, RESET_JOINT_POSITIONS)
                 should_continue_flag = True
 
-            input("\n▶️  Press ENTER to START recording demo...")
+            read_line("\n▶️  Press ENTER to START recording demo...", refresh)
             collector.start_recording()
             print("\n⏸️  Press ENTER to STOP recording demo...")
 
             while True:
+                if refresh is not None:
+                    refresh()
                 if select.select([sys.stdin], [], [], 0.0)[0] == [sys.stdin]:
                     if sys.stdin.read(1) == "\n":
                         collector.stop_recording()
@@ -825,30 +926,30 @@ def main() -> int:
                     break
 
             cprint(f"💾 Saving data to {collector.output_dir}", "white")
-            collector.save(traj_name=f"traj_{demo_index}")
+            call_while_refreshing(lambda: collector.save(traj_name=f"traj_{demo_index}"), refresh)
             cprint(f"✅ Demo #{demo_index} complete!", "green")
 
             if exit_code:
                 break
-            if input("\n❓ Collect another demo? (y/n): ").strip().lower() != "y":
+            if read_line("\n❓ Collect another demo? (y/n): ", refresh).strip().lower() != "y":
                 break
             demo_index += 1
     except KeyboardInterrupt:
         cprint("\n⏹️  Interrupted", "yellow")
     finally:
         cprint(f"\n🏁 Collection complete! Total demos: {demo_index + 1}", "green", attrs=["bold"])
-        running = False
+        # Stop teleop before the hold, and wait out any control() already in flight,
+        # so a leftover SpaceMouse command cannot land after the termination.
         should_continue_flag = False
-        time.sleep(0.2)
-        try:
-            robot_interface.close()
-        except Exception:  # noqa: BLE001 - never mask the original failure during cleanup
-            pass
-        collector.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
-
-    return exit_code
+        if args.run_teleop:
+            time.sleep(0.2)
+            hold_position(robot_interface)
+        running = False
+        # The demo is already on disk. cv2.destroyAllWindows (Qt) and rclpy.shutdown
+        # block after this line, so the shell would not return and the window would stay up.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(exit_code)
 
 
 if __name__ == "__main__":
