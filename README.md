@@ -55,7 +55,7 @@ CAMS="zed zed2i zedm" bash ~/Desktop/ros2_ws/zed_tools/launch_all.sh
 
 # Terminal 2 - Teleoperation + log demonstrations [Option 1]
 python scripts/log_demonstration.py \
-  --output_dir /home/res1/Desktop/real2sim-toolkit/data/Oct26_2026_datacollect --description Calibration \
+  --output_dir /home/res1/Desktop/real2sim-toolkit/data/Oct26_2026_datacollect --description PickCube \
   --recording_rate_hz 20.0 --camera_ids zed zed2i zedm --zed_resolution VGA --show-camera-feed
 
 # Terminal 2 - Teleoperation [Option 2]
@@ -65,22 +65,25 @@ python scripts/run_teleop.py
 ### Output format
 
 `log_demonstration.py` writes one HDF5 per demo, `<output_dir>/<description>__<MM-DD-YYYY__HH-MM-SS>/traj_<i>__<zed_resolution>.h5`,
-in [real2sim-toolkit](https://github.com/jstmn/real2sim-toolkit)'s ManiSkill layout (from "Data formats" in its README,
-checked by `r2st.utils.validate_merged_camera_group`). All datasets share one frame index; `*` marks extras beyond the toolkit's spec.
+in [real2sim-toolkit](https://github.com/jstmn/real2sim-toolkit)'s stereo layout (from "Data format" in its README).
+`r2st.utils.validate_noisy_depth_camera_group` checks a camera's RGB-D datasets and `validate_stereo_depth_camera_group`
+its stereo pair. All datasets share one frame index; `*` marks extras beyond the toolkit's spec.
 
 | Dataset | Shape, dtype | Notes |
 | --- | --- | --- |
 | `obs/qpos`, `obs/qvel`* | `(T, 9)` float64 | `panda_joint1..7`, `panda_finger_joint1/2`. `(T, 7)` with `--no-gripper` |
-| `obs/sensor_data/<cam>/rgb` | `(T, H, W, 3)` uint8 | RGB, gzip 1. `<cam>` is the `--camera_ids` name |
-| `obs/sensor_data/<cam>/depth` | `(T, H, W)` uint16 | mm, registered to `rgb` (unproject with the color K), gzip 1 |
-| `obs/sensor_data/<cam>/timestamp_ms` | `(T,)` float64 | When the logger took sample `i`. Same for every camera |
-| `obs/sensor_data/<cam>/{rgb,depth*}_timestamp_ms` | `(T,)` float64 | Capture time of that frame |
+| `obs/sensor_data/<cam>/timestamp_ms` | `(T,)` float64 | When the logger took sample `i`. Same for every camera. `<cam>` is the `--camera_ids` name |
+| `obs/sensor_data/<cam>/left/rgb` | `(T, H, W, 3)` uint8 | Rectified left RGB, gzip 1 |
+| `obs/sensor_data/<cam>/left/depth_noisy` | `(T, H, W)` uint16 | The ZED's own depth, mm, registered to `left/rgb` (unproject with the left K), gzip 1 |
+| `obs/sensor_data/<cam>/right/rgb` | `(T, H, W, 3)` uint8 | Rectified right RGB, gzip 1. ZEDs only |
+| `.../{left/rgb,left/depth_noisy*,right/rgb}_timestamp_ms` | `(T,)` float64 | Capture time of that frame. Left and right of a sample share one stamp |
 | `obs/robot_arm_ns`*, `obs/robot_gripper_ns`* | `(T,)` int64 | Franka's own clocks (ns since boot, 1 ms resolution). Only comparable with themselves |
 
 `*_timestamp_ms` are host wall clock, Unix-epoch ms. Root attrs: `zed_resolution`, `timezone`, `start_time_local`,
-`end_time_local`, `duration_s`. Without depth (`--no-depth`, `--no-depth-cameras`) a camera fails the toolkit's validator.
-Also written per demo: `<stem>_timing.json`, `<cam>_camera_info_{color,depth}.json` (rectified intrinsics), and `images/`
-(a preview every 10th sample).
+`end_time_local`, `duration_s`. Without depth (`--no-depth`, `--no-depth-cameras`) a camera fails the noisy-depth
+validator; a RealSense camera (no right eye) fails the stereo one. Also written per demo: `<stem>_timing.json`,
+`<cam>_camera_info_{color,depth,right}.json` (rectified intrinsics; the right one's `P[3] = -fx * baseline`), and
+`images/` (a preview every 10th sample).
 
 
 ## Agent control

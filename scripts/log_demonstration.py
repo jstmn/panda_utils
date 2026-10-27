@@ -1,7 +1,8 @@
 """Teleoperated demonstration logging with ZED cameras (ROS 2).
 
 Same UI and SpaceMouse teleop as the old ROS 1 logger. Camera source is ZED. Each demo is
-written in real2sim-toolkit's ManiSkill-style `obs/` layout (see ZedDataCollector.save).
+written in real2sim-toolkit's ManiSkill-style `obs/` stereo layout (see ZedDataCollector.save):
+every ZED is recorded as a rectified left/right RGB pair plus the ZED's own depth.
 
 What changed vs the ROS 1 logger:
   * ROS 1 (rospy) -> ROS 2 (rclpy). Only Humble is installed on this machine.
@@ -65,6 +66,7 @@ import sys
 import threading
 import time
 import traceback
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -102,7 +104,7 @@ RESET_JOINT_POSITIONS = [0.09162008, -0.19826458, -0.01990020, -2.47322699, -0.0
 
 # Timing. One timestamp per sample per stream, aligned with obs/qpos. Two kinds of clock, and
 # only timestamps on the same clock can be compared:
-#   obs/sensor_data/<cam>/{,rgb_,depth_}timestamp_ms   host wall clock, float64 ms since the Unix epoch
+#   obs/sensor_data/<cam>/**timestamp_ms               host wall clock, float64 ms since the Unix epoch
 #   obs/robot_arm_ns, obs/robot_gripper_ns             Franka's own clocks, int64 ns since they booted
 # Internally everything is kept as int64 ns (time.time_ns(), ROS header stamps) until save().
 # Human-readable start/end times are written in LOCAL_TZ, which handles PST/PDT itself.
@@ -133,6 +135,8 @@ JOINT_NAMES = [f"panda_joint{i}" for i in range(1, 8)]
 GRIPPER_JOINT_NAMES = ["panda_finger_joint1", "panda_finger_joint2"]
 JOINT_PUBLISH_HZ = 50.0
 MONTAGE_EVERY = 10  # save the preview montage PNG for every Nth sample only
+# Recent left / right frames kept per stereo camera, to pair them by header stamp (~0.3 s at 30 fps)
+STEREO_PAIR_BUFFER = 10
 TELEOP_HZ = 50.0
 
 
@@ -216,7 +220,7 @@ def save_combined_rgbs(images: list[np.ndarray], camera_ids: list[str], out_path
 
 
 class ZedDataCollector(Node):
-    """Subscribes to ZED colour (and optionally depth) and records samples with joint states."""
+    """Subscribes to ZED colour (left), right, and optionally depth, and records samples with joint states."""
 
     def __init__(self, output_dir: Path, description: str, camera_ids: list[str],
                  robot_interface: FrankaInterface, topic_template: str,
@@ -243,6 +247,9 @@ class ZedDataCollector(Node):
         unknown = skip - set(camera_ids)
         assert not unknown, f"--no-depth-cameras names cameras that are not recorded: {sorted(unknown)}"
         self._depth_cams = set() if not record_depth else set(camera_ids) - skip
+        # Every camera whose layout has a right eye (the ZEDs) is recorded as a stereo pair.
+        self._stereo_cams = {c for c in camera_ids
+                             if LAYOUTS[(camera_layouts or {}).get(c, DEFAULT_LAYOUT)].right is not None}
         self._is_recording = False
 
         self.joint_q: list[np.ndarray] = []
@@ -253,11 +260,14 @@ class ZedDataCollector(Node):
         self.camera_data: dict[str, dict] = {}
         for cam_id in camera_ids:
             self.camera_data[cam_id] = {
-                "depth_images": [], "color_images": [],
-                "depth_stamps_ns": [], "color_stamps_ns": [],
-                "depth_camera_info": None, "color_camera_info": None,
+                "depth_images": [], "color_images": [], "right_images": [],
+                "depth_stamps_ns": [], "color_stamps_ns": [], "right_stamps_ns": [],
+                "depth_camera_info": None, "color_camera_info": None, "right_camera_info": None,
                 # (stamp_ns, image), replaced as one object so a frame and its stamp never mix
                 "_latest_depth": None, "_latest_color": None,
+                # recent (stamp_ns, image) of each eye, so record_sample can pick a matching pair
+                "_recent_color": deque(maxlen=STEREO_PAIR_BUFFER),
+                "_recent_right": deque(maxlen=STEREO_PAIR_BUFFER),
             }
 
         qos = make_qos(best_effort)
@@ -284,17 +294,33 @@ class ZedDataCollector(Node):
                     self.create_subscription(CameraInfo, f"{ns}/{layout.depth_info}",
                                              lambda m, c=cam_id: self._depth_info_cb(m, c), qos),
                 ]
-                cprint(f"   subscribed: {ns}/{{{layout.color}, {layout.depth}}}", "white")
-            else:
-                cprint(f"   subscribed: {ns}/{layout.color}  (depth off)", "white")
+            if cam_id in self._stereo_cams:
+                self._subscribers += [
+                    self.create_subscription(Image, f"{ns}/{layout.right}",
+                                             lambda m, c=cam_id: self._right_cb(m, c), qos),
+                    self.create_subscription(CameraInfo, f"{ns}/{layout.right_info}",
+                                             lambda m, c=cam_id: self._right_info_cb(m, c), qos),
+                ]
+            topics = [layout.color] + ([layout.right] if cam_id in self._stereo_cams else []) \
+                + ([layout.depth] if cam_id in self._depth_cams else [])
+            cprint(f"   subscribed: {ns}/{{{', '.join(topics)}}}", "white")
 
     # -- callbacks ---------------------------------------------------------
 
     def _color_cb(self, msg: Image, cam_id: str) -> None:
         try:
-            self.camera_data[cam_id]["_latest_color"] = (stamp_to_ns(msg), decode_color(msg))
+            frame = (stamp_to_ns(msg), decode_color(msg))
         except ValueError as exc:
             self.get_logger().warn(f"{cam_id}: {exc}")
+            return
+        self.camera_data[cam_id]["_latest_color"] = frame
+        self.camera_data[cam_id]["_recent_color"].append(frame)
+
+    def _right_cb(self, msg: Image, cam_id: str) -> None:
+        try:
+            self.camera_data[cam_id]["_recent_right"].append((stamp_to_ns(msg), decode_color(msg)))
+        except ValueError as exc:
+            self.get_logger().warn(f"{cam_id} right: {exc}")
 
     def _depth_cb(self, msg: Image, cam_id: str) -> None:
         try:
@@ -310,6 +336,10 @@ class ZedDataCollector(Node):
         if self.camera_data[cam_id]["depth_camera_info"] is None:
             self.camera_data[cam_id]["depth_camera_info"] = camera_info_to_dict(msg)
 
+    def _right_info_cb(self, msg: CameraInfo, cam_id: str) -> None:
+        if self.camera_data[cam_id]["right_camera_info"] is None:
+            self.camera_data[cam_id]["right_camera_info"] = camera_info_to_dict(msg)
+
     # -- recording ---------------------------------------------------------
 
     @property
@@ -321,14 +351,31 @@ class ZedDataCollector(Node):
             return False
         if cam_id in self._depth_cams and self.camera_data[cam_id]["_latest_depth"] is None:
             return False
+        if cam_id in self._stereo_cams and self._stereo_pair(cam_id) is None:
+            return False
         return True
 
-    def _check_dims(self, cam_id: str, color: np.ndarray, depth: np.ndarray | None) -> None:
+    def _stereo_pair(self, cam_id: str) -> tuple[tuple[int, np.ndarray], tuple[int, np.ndarray]] | None:
+        """Newest (left, right) frames sharing a header stamp, i.e. from the same grab, or None.
+
+        The two eyes arrive as separate messages, so the newest left frame's right partner may
+        not be here yet. Pairing by stamp, not "latest of each", keeps a sample from mixing
+        two grabs, which would corrupt stereo matching.
+        """
+        data = self.camera_data[cam_id]
+        rights = dict(list(data["_recent_right"]))  # list() snapshots the deque against the spin thread
+        for stamp, left in reversed(list(data["_recent_color"])):
+            if stamp in rights:
+                return (stamp, left), (stamp, rights[stamp])
+        return None
+
+    def _check_dims(self, cam_id: str, color: np.ndarray, depth: np.ndarray | None,
+                    right: np.ndarray | None = None) -> None:
         """Assert a ZED camera's frames are the size --zed_resolution says they are."""
         if cam_id not in self._zed_cams:
             return
         h, w = self._zed_shape
-        for kind, img in (("color", color), ("depth", depth)):
+        for kind, img in (("color", color), ("depth", depth), ("right", right)):
             if img is not None:
                 assert img.shape[:2] == (h, w), (
                     f"{cam_id} {kind} image is {img.shape[1]}x{img.shape[0]}, but --zed_resolution "
@@ -336,9 +383,11 @@ class ZedDataCollector(Node):
                     "~/Desktop/ros2_ws/src/zed-ros2-wrapper/zed_wrapper/config/")
 
     def wait_for_frames(self, timeout_s: float = 20.0) -> bool:
-        """Block until every camera has delivered colour (and depth, if enabled)."""
-        need = ", ".join(f"{c}:{'colour+depth' if c in self._depth_cams else 'colour'}"
-                         for c in self._camera_ids)
+        """Block until every camera has delivered colour, a stereo pair (ZED) and depth (if enabled)."""
+        def streams(c: str) -> str:
+            on = ["left"] + (["right"] if c in self._stereo_cams else []) + (["depth"] if c in self._depth_cams else [])
+            return "+".join(on)
+        need = ", ".join(f"{c}:{streams(c)}" for c in self._camera_ids)
         cprint(f"⏳ Waiting for first {need} frames from: {self._camera_ids}", "cyan")
         deadline = time.time() + timeout_s
         while time.time() < deadline:
@@ -347,8 +396,10 @@ class ZedDataCollector(Node):
                 try:
                     for c in self._camera_ids:
                         depth = self.camera_data[c]["_latest_depth"]
+                        pair = self._stereo_pair(c) if c in self._stereo_cams else None
                         self._check_dims(c, self.camera_data[c]["_latest_color"][1],
-                                         None if depth is None else depth[1])
+                                         None if depth is None else depth[1],
+                                         None if pair is None else pair[1][1])
                 except AssertionError as exc:
                     cprint(f"❌ {exc}", "red")
                     return False
@@ -368,7 +419,8 @@ class ZedDataCollector(Node):
         self.joint_q, self.joint_dq = [], []
         self.sample_time_ns, self.robot_arm_ns, self.robot_gripper_ns = [], [], []
         for cam_id in self._camera_ids:
-            for key in ("depth_images", "color_images", "depth_stamps_ns", "color_stamps_ns"):
+            for key in ("depth_images", "color_images", "right_images",
+                        "depth_stamps_ns", "color_stamps_ns", "right_stamps_ns"):
                 self.camera_data[cam_id][key] = []
         cprint("🎬 Started recording", "green")
 
@@ -411,17 +463,25 @@ class ZedDataCollector(Node):
         # Snapshot every camera before committing anything.
         frames = {}
         for cam_id in self._camera_ids:
-            color = self.camera_data[cam_id]["_latest_color"]
-            if color is None:
-                continue
+            right = None
+            if cam_id in self._stereo_cams:
+                pair = self._stereo_pair(cam_id)
+                if pair is None:
+                    continue
+                color, right = pair
+            else:
+                color = self.camera_data[cam_id]["_latest_color"]
+                if color is None:
+                    continue
             if cam_id in self._depth_cams:
                 depth = self.camera_data[cam_id]["_latest_depth"]
                 if depth is None:
                     continue
             else:
                 depth = None
-            self._check_dims(cam_id, color[1], None if depth is None else depth[1])
-            frames[cam_id] = (color, depth)
+            self._check_dims(cam_id, color[1], None if depth is None else depth[1],
+                             None if right is None else right[1])
+            frames[cam_id] = (color, depth, right)
 
         if len(frames) < len(self._camera_ids):
             return list(frames), False  # caller reports the missing cameras and stops
@@ -432,13 +492,12 @@ class ZedDataCollector(Node):
         self.robot_arm_ns.append(arm_ns)
         if gripper_ns is not None:
             self.robot_gripper_ns.append(gripper_ns)
-        for cam_id, (color, depth) in frames.items():
+        for cam_id, (color, depth, right) in frames.items():
             data = self.camera_data[cam_id]
-            data["color_stamps_ns"].append(color[0])
-            data["color_images"].append(color[1])
-            if cam_id in self._depth_cams and depth is not None:
-                data["depth_stamps_ns"].append(depth[0])
-                data["depth_images"].append(depth[1])
+            for kind, frame in (("color", color), ("depth", depth), ("right", right)):
+                if frame is not None:
+                    data[f"{kind}_stamps_ns"].append(frame[0])
+                    data[f"{kind}_images"].append(frame[1])
 
         return list(frames), True
 
@@ -467,17 +526,21 @@ class ZedDataCollector(Node):
         # e.g. traj_0__VGA.h5. Readers glob traj_*.h5 and parse the index with
         # stem.split("_")[1] or r"traj_(\d+)", both of which still work with the suffix.
         h5_path = self.output_dir / f"{traj_name}__{self._zed_resolution}.h5"
-        # real2sim-toolkit's ManiSkill-style layout ("Data formats" in its README, checked by
-        # r2st.utils.validate_merged_camera_group). Every dataset shares one frame index.
-        #   obs/qpos, obs/qvel                        (T,9) float64, (T,7) with --no-gripper
-        #   obs/robot_arm_ns, obs/robot_gripper_ns    int64 on Franka's own clocks, `clock` attr
-        #   obs/sensor_data/<cam>/rgb                 (T,H,W,3) uint8 RGB, gzip 1
-        #   obs/sensor_data/<cam>/depth               (T,H,W) uint16 mm registered to rgb, gzip 1
-        #   obs/sensor_data/<cam>/timestamp_ms        (T,) float64, sample tick (sample_time_ns / 1e6)
-        #   obs/sensor_data/<cam>/rgb_timestamp_ms    (T,) float64, capture stamp of that rgb frame
-        #   obs/sensor_data/<cam>/depth_timestamp_ms  (T,) float64, capture stamp of that depth frame
-        # All three *timestamp_ms are host wall clock, ms since the Unix epoch. They carry no
-        # `clock` attr because the toolkit expects plain float arrays there.
+        # real2sim-toolkit's stereo layout ("Data format" in its README, checked by
+        # r2st.utils.validate_noisy_depth_camera_group / validate_stereo_depth_camera_group).
+        # Every dataset shares one frame index.
+        #   obs/qpos, obs/qvel                                    (T,9) float64, (T,7) with --no-gripper
+        #   obs/robot_arm_ns, obs/robot_gripper_ns                int64 on Franka's own clocks, `clock` attr
+        #   obs/sensor_data/<cam>/timestamp_ms                    (T,) float64, sample tick (sample_time_ns / 1e6)
+        #   obs/sensor_data/<cam>/left/rgb                        (T,H,W,3) uint8 rectified left RGB, gzip 1
+        #   obs/sensor_data/<cam>/left/depth_noisy                (T,H,W) uint16 mm, the ZED's own depth,
+        #                                                         registered to left/rgb, gzip 1
+        #   obs/sensor_data/<cam>/right/rgb                       (T,H,W,3) uint8 rectified right RGB, gzip 1
+        #   obs/sensor_data/<cam>/{left/rgb,left/depth_noisy,right/rgb}_timestamp_ms
+        #                                                         (T,) float64, capture stamp of that frame.
+        #                                                         left and right of a sample share one stamp.
+        # All *timestamp_ms are host wall clock, ms since the Unix epoch. They carry no `clock`
+        # attr because the toolkit expects plain float arrays there.
         with h5py.File(h5_path, "a") as f:
             q = np.array(self.joint_q)
             dq = np.array(self.joint_dq)
@@ -515,15 +578,17 @@ class ZedDataCollector(Node):
                     continue
                 group = f.create_group(f"obs/sensor_data/{cam_id}")
                 group.create_dataset("timestamp_ms", data=sample_ns / 1e6)
-                kinds = [("color", "rgb")]
+                kinds = [("color", "left/rgb")]
                 if cam_id in self._depth_cams and len(data["depth_images"]) > 0:
-                    kinds.append(("depth", "depth"))
+                    kinds.append(("depth", "left/depth_noisy"))
+                if cam_id in self._stereo_cams and len(data["right_images"]) > 0:
+                    kinds.append(("right", "right/rgb"))
                 for kind, name in kinds:
                     group.create_dataset(name, data=np.array(data[f"{kind}_images"]),
                                          compression="gzip", compression_opts=1)
                     stamps = np.array(data[f"{kind}_stamps_ns"], dtype=np.int64)
                     group.create_dataset(f"{name}_timestamp_ms", data=stamps / 1e6)
-                    streams[f"{cam_id}__{kind}"] = (stamps, HOST_CLOCK, sample_ns)
+                    streams[f"{cam_id}/{name}"] = (stamps, HOST_CLOCK, sample_ns)
 
         timing = {
             "timezone": str(LOCAL_TZ),
@@ -538,7 +603,7 @@ class ZedDataCollector(Node):
         cprint(f"\n⏱  {timing['start_time_local']} -> {timing['end_time_local']} "
                f"({timing['duration_s']:.1f} s)", "cyan")
         for name, st in timing["streams"].items():
-            line = f"   {name:<20} {st['rate_hz']} Hz, max gap {st['max_gap_ms']} ms, {st['repeats']} repeats"
+            line = f"   {name:<24} {st['rate_hz']} Hz, max gap {st['max_gap_ms']} ms, {st['repeats']} repeats"
             if "mean_age_ms" in st:
                 line += f", age {st['mean_age_ms']}/{st['max_age_ms']} ms (mean/max)"
             cprint(line, "white")
@@ -547,6 +612,9 @@ class ZedDataCollector(Node):
             kinds = [("color", "color_camera_info")]
             if cam_id in self._depth_cams:
                 kinds.append(("depth", "depth_camera_info"))
+            if cam_id in self._stereo_cams:
+                # right P[3] = -fx * baseline (ROS stereo convention), so the baseline is in here
+                kinds.append(("right", "right_camera_info"))
             for kind, key in kinds:
                 if self.camera_data[cam_id][key] is not None:
                     with open(self.output_dir / f"{cam_id}_camera_info_{kind}.json", "w") as fh:
@@ -562,11 +630,14 @@ class ZedDataCollector(Node):
                      if len(self.camera_data[c]["color_images"]) > 0}
         for cam_id in self._camera_ids:
             n_c = len(self.camera_data[cam_id]["color_images"])
+            counts = [f"{n_c} left"]
+            if cam_id in self._stereo_cams:
+                counts.append(f"{len(self.camera_data[cam_id]['right_images'])} right")
             if cam_id in self._depth_cams:
-                n_d = len(self.camera_data[cam_id]["depth_images"])
-                cprint(f"   Camera {cam_id}: {n_d} depth, {n_c} color images collected", "white")
+                counts.append(f"{len(self.camera_data[cam_id]['depth_images'])} depth")
             else:
-                cprint(f"   Camera {cam_id}: {n_c} color images collected (depth off)", "white")
+                counts.append("depth off")
+            cprint(f"   Camera {cam_id}: {', '.join(counts)} images collected", "white")
 
         if available:
             num_samples = min(len(v) for v in available.values())
@@ -824,8 +895,12 @@ def main() -> int:
         cprint(f"Depth    : {per_cam}", "white")
     depthless = camera_ids if not record_depth else [c for c in camera_ids if c in no_depth_cameras]
     if depthless:
-        cprint(f"⚠️  No depth for {depthless}: real2sim-toolkit requires depth for every camera, so these "
-               "obs/sensor_data groups will fail r2st.utils.validate_merged_camera_group.", "yellow")
+        cprint(f"⚠️  No depth for {depthless}: these obs/sensor_data groups will fail "
+               "r2st.utils.validate_noisy_depth_camera_group.", "yellow")
+    monocular = [c for c in camera_ids if LAYOUTS[camera_layouts[c]].right is None]
+    if monocular:
+        cprint(f"⚠️  No right eye for {monocular} (layout has none): these obs/sensor_data groups will "
+               "fail r2st.utils.validate_stereo_depth_camera_group.", "yellow")
     cprint(f"Gripper  : {'enabled' if has_gripper else 'DISABLED (--no-gripper)'}", "white")
     if args.show_camera_feed:
         cprint(f"Feed     : live window '{FEED_WINDOW}'", "white")

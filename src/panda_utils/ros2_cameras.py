@@ -20,6 +20,8 @@ from sensor_msgs.msg import CameraInfo, Image
 #
 #   ZED        zed_tools/launch_all.sh -> namespace:=zed_multi, camera_name:=<zed|zed2i|zedm>.
 #              `depth/depth_registered` is 32FC1 metres, already on the left-rgb grid.
+#              `rgb` is the rectified left eye; `right/image_rect_color` is the rectified right eye,
+#              published with the same header stamp as the left image from the same grab.
 #   RealSense  ros2 launch realsense2_camera rs_launch.py camera_namespace:=camera \
 #                  camera_name:=d435 align_depth.enable:=true -> /camera/d435/...
 #              `aligned_depth_to_color/image_raw` is 16UC1 millimetres on the colour grid.
@@ -28,7 +30,8 @@ from sensor_msgs.msg import CameraInfo, Image
 #              assume depth and colour share rays. align_depth.enable:=true is not optional.
 #
 # decode_depth handles both encodings already, so a layout is the only thing that varies.
-CameraLayout = namedtuple("CameraLayout", "template color depth color_info depth_info")
+# `right` / `right_info` are None for layouts without a right RGB eye.
+CameraLayout = namedtuple("CameraLayout", "template color depth color_info depth_info right right_info")
 
 LAYOUTS = {
     "zed": CameraLayout(
@@ -37,6 +40,8 @@ LAYOUTS = {
         depth="depth/depth_registered",
         color_info="rgb/camera_info",
         depth_info="depth/camera_info",
+        right="right/image_rect_color",
+        right_info="right/camera_info",
     ),
     "realsense": CameraLayout(
         template="/camera/{cam}",
@@ -44,6 +49,8 @@ LAYOUTS = {
         depth="aligned_depth_to_color/image_raw",
         color_info="color/camera_info",
         depth_info="aligned_depth_to_color/camera_info",
+        right=None,
+        right_info=None,
     ),
 }
 DEFAULT_LAYOUT = "zed"
