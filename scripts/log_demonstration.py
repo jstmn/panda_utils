@@ -408,7 +408,9 @@ class ZedDataCollector(Node):
             time.sleep(0.2)
 
         missing = [c for c in self._camera_ids if not self._camera_ready(c)]
+        matched = sum(sub.get_publisher_count() > 0 for sub in self._subscribers)
         cprint(f"❌ No frames from: {missing} after {timeout_s:.0f}s", "red")
+        cprint(f"   {matched}/{len(self._subscribers)} subscriptions see a publisher", "red")
         cprint("   Check the cameras are up:  bash ~/Desktop/ros2_ws/zed_tools/verify.sh", "red")
         cprint("   Check topic names:         python scripts/log_demonstration.py --list-topics", "red")
         cprint("   If topics exist but no data arrives, retry with --qos-best-effort", "red")
@@ -813,6 +815,23 @@ def list_topics() -> int:
     return 0
 
 
+def release_ros(node: Node, threads: list[threading.Thread]) -> None:
+    """Unregister this process's readers, then shut rclpy down.
+
+    The camera topics are RELIABLE, and os._exit does not send the DDS dispose. A participant
+    that vanishes that way stays matched for the discovery lease, which is 20s — the same
+    timeout as wait_for_frames. The next launch receives nothing and fails; that failed
+    launch shuts down for real, so the launch after it succeeds. Join the threads first.
+    destroy_node deadlocks if spin_once is still inside the executor.
+    """
+    for thread in threads:
+        thread.join(timeout=2.0)
+    alive = [thread.name for thread in threads if thread.is_alive()]
+    assert not alive, f"threads still running at ROS shutdown: {alive}"
+    node.destroy_node()
+    rclpy.shutdown()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -938,91 +957,97 @@ def main() -> int:
         while running and rclpy.ok():
             rclpy.spin_once(collector, timeout_sec=0.05)
 
-    threading.Thread(target=spin_target, daemon=True).start()
-
-    if camera_ids and not collector.wait_for_frames():
-        running = False
-        robot_interface.close()
-        collector.destroy_node()
-        rclpy.shutdown()
-        return 1
-
-    threading.Thread(target=joint_publish_thread_target,
-                     args=(collector, robot_interface, has_gripper, lambda: running),
-                     daemon=True).start()
-
-    if args.run_teleop:
-        threading.Thread(target=teleop_control_thread_target,
-                         args=(robot_interface, device, lambda: should_continue_flag, lambda: running),
-                         daemon=True).start()
+    spin_thread = threading.Thread(target=spin_target, name="camera-spin", daemon=True)
+    spin_thread.start()
+    joint_thread = None
 
     demo_index = 0
     period = 1.0 / args.recording_rate_hz
     exit_code = 0
     refresh = collector.show_camera_feed if args.show_camera_feed else None
+    started = False
 
     try:
-        while rclpy.ok():
-            cprint(f"\n{'='*60}", "cyan")
-            cprint(f"📝 DEMO #{demo_index}", "cyan", attrs=["bold"])
-            cprint(f"{'='*60}", "cyan")
+        if camera_ids and not collector.wait_for_frames():
+            exit_code = 1
+        else:
+            started = True
+            joint_thread = threading.Thread(
+                target=joint_publish_thread_target,
+                args=(collector, robot_interface, has_gripper, lambda: running),
+                name="joint-states", daemon=True)
+            joint_thread.start()
+            if args.run_teleop:
+                threading.Thread(
+                    target=teleop_control_thread_target,
+                    args=(robot_interface, device, lambda: should_continue_flag, lambda: running),
+                    daemon=True).start()
 
-            if args.reset_joints:
-                cprint("🔄 Resetting robot...", "yellow")
-                should_continue_flag = False
-                time.sleep(0.1)
-                reset_joints_to(robot_interface, RESET_JOINT_POSITIONS)
-                should_continue_flag = True
+            while rclpy.ok():
+                cprint(f"\n{'='*60}", "cyan")
+                cprint(f"📝 DEMO #{demo_index}", "cyan", attrs=["bold"])
+                cprint(f"{'='*60}", "cyan")
 
-            read_line("\n▶️  Press ENTER to START recording demo...", refresh)
-            collector.start_recording()
-            print("\n⏸️  Press ENTER to STOP recording demo...")
+                if args.reset_joints:
+                    cprint("🔄 Resetting robot...", "yellow")
+                    should_continue_flag = False
+                    time.sleep(0.1)
+                    reset_joints_to(robot_interface, RESET_JOINT_POSITIONS)
+                    should_continue_flag = True
 
-            while True:
-                if refresh is not None:
-                    refresh()
-                if select.select([sys.stdin], [], [], 0.0)[0] == [sys.stdin]:
-                    if sys.stdin.read(1) == "\n":
+                read_line("\n▶️  Press ENTER to START recording demo...", refresh)
+                collector.start_recording()
+                print("\n⏸️  Press ENTER to STOP recording demo...")
+
+                while True:
+                    if refresh is not None:
+                        refresh()
+                    if select.select([sys.stdin], [], [], 0.0)[0] == [sys.stdin]:
+                        if sys.stdin.read(1) == "\n":
+                            collector.stop_recording()
+                            break
+
+                    time.sleep(period)
+                    found_cams, joint_recorded = collector.record_sample()
+                    missing = [c for c in camera_ids if c not in found_cams]
+                    if missing:
+                        kind = "RGBD" if collector._depth_cams else "RGB"
+                        cprint(f"❌ {kind} data missing from: {missing}. Stopping.", "red")
                         collector.stop_recording()
+                        exit_code = 1
+                        break
+                    if not joint_recorded:
+                        cprint("❌ Joint states missing. Stopping.", "red")
+                        collector.stop_recording()
+                        exit_code = 1
                         break
 
-                time.sleep(period)
-                found_cams, joint_recorded = collector.record_sample()
-                missing = [c for c in camera_ids if c not in found_cams]
-                if missing:
-                    kind = "RGBD" if collector._depth_cams else "RGB"
-                    cprint(f"❌ {kind} data missing from: {missing}. Stopping.", "red")
-                    collector.stop_recording()
-                    exit_code = 1
-                    break
-                if not joint_recorded:
-                    cprint("❌ Joint states missing. Stopping.", "red")
-                    collector.stop_recording()
-                    exit_code = 1
-                    break
+                cprint(f"💾 Saving data to {collector.output_dir}", "white")
+                call_while_refreshing(lambda: collector.save(traj_name=f"traj_{demo_index}"), refresh)
+                cprint(f"✅ Demo #{demo_index} complete!", "green")
 
-            cprint(f"💾 Saving data to {collector.output_dir}", "white")
-            call_while_refreshing(lambda: collector.save(traj_name=f"traj_{demo_index}"), refresh)
-            cprint(f"✅ Demo #{demo_index} complete!", "green")
-
-            if exit_code:
-                break
-            if read_line("\n❓ Collect another demo? (y/n): ", refresh).strip().lower() != "y":
-                break
-            demo_index += 1
+                if exit_code:
+                    break
+                if read_line("\n❓ Collect another demo? (y/n): ", refresh).strip().lower() != "y":
+                    break
+                demo_index += 1
     except KeyboardInterrupt:
         cprint("\n⏹️  Interrupted", "yellow")
     finally:
-        cprint(f"\n🏁 Collection complete! Total demos: {demo_index + 1}", "green", attrs=["bold"])
-        # Stop teleop before the hold, and wait out any control() already in flight,
-        # so a leftover SpaceMouse command cannot land after the termination.
-        should_continue_flag = False
-        if args.run_teleop:
-            time.sleep(0.2)
-            hold_position(robot_interface)
+        if started:
+            cprint(f"\n🏁 Collection complete! Total demos: {demo_index + 1}", "green", attrs=["bold"])
+            # Stop teleop before the hold, and wait out any control() already in flight,
+            # so a leftover SpaceMouse command cannot land after the termination.
+            should_continue_flag = False
+            if args.run_teleop:
+                time.sleep(0.2)
+                hold_position(robot_interface)
+        else:
+            robot_interface.close()
         running = False
-        # The demo is already on disk. cv2.destroyAllWindows (Qt) and rclpy.shutdown
-        # block after this line, so the shell would not return and the window would stay up.
+        # Unregister before os._exit. Qt's destroyAllWindows blocks the shell, so the
+        # process still has to end here, but the DDS readers have to be gone first.
+        release_ros(collector, [spin_thread] + ([joint_thread] if joint_thread is not None else []))
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(exit_code)

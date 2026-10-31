@@ -50,13 +50,15 @@ conda activate panda_utils; source /opt/ros/humble/setup.bash; source ~/Desktop/
 # Resolution is VGA (672x376 @ 30fps, RGB + depth). launch_all.sh can't override it: to change, set
 # `grab_resolution` (HD2K | HD1080 | HD720 | VGA) in ~/Desktop/ros2_ws/src/zed-ros2-wrapper/zed_wrapper/config/{zed,zed2i,zedm}.yaml,
 # then rebuild: (cd ~/Desktop/ros2_ws && colcon build --packages-select zed_wrapper)
-CAMS="zed zed2i zedm" bash ~/Desktop/ros2_ws/zed_tools/launch_all.sh
+# CAMS="zed zed2i zedm" bash ~/Desktop/ros2_ws/zed_tools/launch_all.sh
+CAMS="zed zed2i" bash ~/Desktop/ros2_ws/zed_tools/launch_all.sh
 
 
 # Terminal 2 - Teleoperation + log demonstrations [Option 1]
 python scripts/log_demonstration.py \
-  --output_dir /home/res1/Desktop/real2sim-toolkit/data/Oct26_2026_datacollect --description PickCube_6x6x6cm \
-  --recording_rate_hz 20.0 --camera_ids zed zed2i zedm --zed_resolution VGA --show-camera-feed
+  --output_dir /home/res1/Desktop/real2sim-toolkit/data/Oct27_2026_datacollect --description PickGreenCube_5x5x5cm \
+  --recording_rate_hz 20.0 --camera_ids zed zed2i --zed_resolution VGA --show-camera-feed
+  # --recording_rate_hz 20.0 --camera_ids zed zed2i zedm --zed_resolution VGA --show-camera-feed
 
 # Terminal 2 - Teleoperation [Option 2]
 python scripts/run_teleop.py
